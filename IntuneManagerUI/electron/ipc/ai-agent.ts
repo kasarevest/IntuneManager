@@ -455,28 +455,69 @@ export function registerAiAgentHandlers(win: BrowserWindow, db: Database): void 
   })
 
   // Get AI-based app recommendations (no job streaming — returns directly)
-  ipcMain.handle('ipc:ai:get-recommendations', async () => {
+  // Strategy: return DB-cached recommendations immediately (instant load), then refresh
+  // from Claude in the background and push updated results via a separate IPC event.
+  ipcMain.handle('ipc:ai:get-recommendations', async (event) => {
     const apiKeyRow = db.prepare("SELECT value FROM app_settings WHERE key = 'claude_api_key_encrypted'").get() as { value: string } | undefined
     const apiKey = apiKeyRow ? decryptSetting(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
-    if (!apiKey) return { success: false, error: 'Claude API key not configured', recommendations: [] }
+    if (!apiKey) return { success: false, error: 'Claude API key not configured', recommendations: [], fromCache: false }
 
+    // Return cached recommendations immediately if available
+    const cacheRow = db.prepare("SELECT value FROM app_settings WHERE key = 'recommendations_cache'").get() as { value: string } | undefined
+    let cachedRecommendations: unknown[] | null = null
+    if (cacheRow?.value) {
+      try { cachedRecommendations = JSON.parse(cacheRow.value) } catch { /* ignore corrupt cache */ }
+    }
+
+    // Background refresh function — fetches from Claude and saves to DB
+    const refreshInBackground = async () => {
+      try {
+        const anthropic = new Anthropic({ apiKey })
+        const response = await anthropic.messages.create({
+          model: 'claude-sonnet-4-5',
+          max_tokens: 4096,
+          system: `You are an enterprise IT assistant. Return a JSON array of 50 commonly deployed enterprise Windows applications.
+Each item must have: id (unique string), name (string), publisher (string), description (string, max 80 chars), wingetId (string or null), category (string).
+Respond ONLY with a JSON array. No markdown, no explanation.`,
+          messages: [{ role: 'user', content: 'List 50 essential enterprise Windows apps for Intune deployment.' }]
+        })
+        const text = response.content.find(b => b.type === 'text')?.text ?? '[]'
+        const jsonMatch = text.match(/\[[\s\S]*\]/)
+        const fresh = jsonMatch ? JSON.parse(jsonMatch[0]) : []
+        if (Array.isArray(fresh) && fresh.length > 0) {
+          db.prepare("INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('recommendations_cache', ?, datetime('now'))").run(JSON.stringify(fresh))
+          // Notify renderer with refreshed results
+          event.sender.send('ipc:ai:recommendations-updated', { recommendations: fresh })
+        }
+      } catch { /* background refresh failure is silent — cached data still shown */ }
+    }
+
+    if (cachedRecommendations && cachedRecommendations.length > 0) {
+      // Return cache instantly, kick off background refresh without awaiting
+      refreshInBackground()
+      return { success: true, recommendations: cachedRecommendations, fromCache: true }
+    }
+
+    // No cache — must wait for Claude (first-ever load)
     try {
       const anthropic = new Anthropic({ apiKey })
       const response = await anthropic.messages.create({
-        model: 'claude-opus-4-5-20251101',
+        model: 'claude-sonnet-4-5',
         max_tokens: 4096,
         system: `You are an enterprise IT assistant. Return a JSON array of 50 commonly deployed enterprise Windows applications.
 Each item must have: id (unique string), name (string), publisher (string), description (string, max 80 chars), wingetId (string or null), category (string).
 Respond ONLY with a JSON array. No markdown, no explanation.`,
         messages: [{ role: 'user', content: 'List 50 essential enterprise Windows apps for Intune deployment.' }]
       })
-
       const text = response.content.find(b => b.type === 'text')?.text ?? '[]'
       const jsonMatch = text.match(/\[[\s\S]*\]/)
       const recommendations = jsonMatch ? JSON.parse(jsonMatch[0]) : []
-      return { success: true, recommendations }
+      if (Array.isArray(recommendations) && recommendations.length > 0) {
+        db.prepare("INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('recommendations_cache', ?, datetime('now'))").run(JSON.stringify(recommendations))
+      }
+      return { success: true, recommendations, fromCache: false }
     } catch (err) {
-      return { success: false, error: (err as Error).message, recommendations: [] }
+      return { success: false, error: (err as Error).message, recommendations: [], fromCache: false }
     }
   })
 
@@ -572,7 +613,7 @@ async function runDeployJob(
     if (signal.aborted) throw new Error('Job cancelled')
 
     const response = await anthropic.messages.create({
-      model: 'claude-opus-4-5-20251101',
+      model: 'claude-sonnet-4-5',
       max_tokens: 4096,
       system: SYSTEM_PROMPT + pathContext,
       tools: DEPLOY_TOOLS,
@@ -786,7 +827,7 @@ async function runPackageOnlyJob(
     if (signal.aborted) throw new Error('Job cancelled')
 
     const response = await anthropic.messages.create({
-      model: 'claude-opus-4-5-20251101',
+      model: 'claude-sonnet-4-5',
       max_tokens: 4096,
       system: PACKAGE_ONLY_SYSTEM_PROMPT + pathContext,
       tools: PACKAGE_ONLY_TOOLS,

@@ -4,7 +4,7 @@
 
 ## What is IntuneManager?
 
-IntuneManager is an AI-powered desktop application for packaging and deploying Windows applications to Microsoft Intune as Win32 apps. It replaces the manual workflow of downloading installers, writing PowerShell scripts, running IntuneWinAppUtil.exe, and uploading through the Intune portal — with a guided, automated pipeline driven by an AI agent (Claude).
+IntuneManager is an AI-powered desktop application for managing Intune applications and devices. It packages and deploy Windows applications to Microsoft Intune as Win32 apps. It replaces the manual workflow of downloading installers, writing PowerShell scripts, running IntuneWinAppUtil.exe, and uploading through the Intune portal — with a guided, automated pipeline driven by an AI agent (Claude).
 
 The project consists of two components:
 
@@ -149,7 +149,7 @@ The `.intunewin` outer file is a ZIP. The actual content to upload is the inner 
 
 The AI agent is a Claude tool-use loop in `electron/ipc/ai-agent.ts`.
 
-**Model:** `claude-opus-4-5-20251101`
+**Model:** `claude-sonnet-4-5`
 
 **Tools available:**
 

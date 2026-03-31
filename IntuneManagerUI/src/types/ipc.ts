@@ -53,6 +53,7 @@ export interface GetRecommendationsRes {
   success: boolean
   recommendations: AppRecommendation[]
   error?: string
+  fromCache?: boolean
 }
 
 export interface IntunewinPackage {

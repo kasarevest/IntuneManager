@@ -11,7 +11,7 @@ import { ipcPsSearchWinget } from '../lib/ipc'
 export default function AppCatalog() {
   const navigate = useNavigate()
   const { tenant } = useTenant()
-  const { recommendations, loading: recsLoading, error: recsError } = useRecommendations()
+  const { recommendations, loading: recsLoading, refreshing: recsRefreshing, error: recsError } = useRecommendations()
 
   // Search
   const [searchQuery, setSearchQuery] = useState('')
@@ -187,6 +187,7 @@ export default function AppCatalog() {
                   {!recsLoading && recommendations.length > 0 && (
                     <span style={styles.countBadge}>{recommendations.length} apps</span>
                   )}
+                  {recsRefreshing && <span style={styles.refreshingBadge}>Refreshing...</span>}
                 </h2>
               </div>
 
@@ -301,6 +302,11 @@ const styles: Record<string, React.CSSProperties> = {
   loadingBadge: {
     fontSize: 11,
     color: 'var(--text-400)',
+    fontWeight: 400,
+  },
+  refreshingBadge: {
+    fontSize: 11,
+    color: 'var(--accent)',
     fontWeight: 400,
   },
   countBadge: {
