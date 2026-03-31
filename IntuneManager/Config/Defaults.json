@@ -1,0 +1,22 @@
+{
+  "UploadChunkSizeMB": 5,
+  "UploadTimeoutSeconds": 600,
+  "CommitPollIntervalSeconds": 5,
+  "CommitPollTimeoutSeconds": 120,
+  "GraphBaseUrl": "https://graph.microsoft.com/beta",
+  "AzureBlobApiVersion": "2019-07-07",
+  "MsalClientId": "d1ddf0e4-d672-4dae-b554-9d5bdfd93547",
+  "MsalScopes": [
+    "https://graph.microsoft.com/DeviceManagementApps.ReadWrite.All",
+    "https://graph.microsoft.com/DeviceManagementConfiguration.Read.All"
+  ],
+  "RequiredScopes": [
+    "DeviceManagementApps.ReadWrite.All",
+    "DeviceManagementConfiguration.Read.All"
+  ],
+  "WingetLatestVersionResolver": true,
+  "AppDataFolder": "%APPDATA%\\IntuneManager",
+  "SessionLogFile": "session.log",
+  "TokenCacheFile": "token.cache",
+  "ConfigFile": "config.json"
+}

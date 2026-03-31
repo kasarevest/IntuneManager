@@ -1,0 +1,531 @@
+# Lessons Learned
+
+> Query this file at the start of each session using keywords from the current task (e.g., "Intune", "MSI", "detection", "registry").
+
+---
+
+## Lesson 001 — Camtasia Package (2026-03-25)
+
+### Keywords
+`intune`, `msi`, `camtasia`, `detection`, `registry`, `peer-review`, `enhanced-workflow`
+
+### What Happened
+Built an Intune Win32 package for Camtasia without following the Enhanced Workflow. Skipped Pre-Flight planning, did not enter Plan Mode, started downloading a 305 MB file and creating scripts without user sign-off, used no peer reviewer, and wrote no post-flight documentation.
+
+### Anti-Pattern (Why It Happened)
+**Workflow steps were treated as optional overhead rather than mandatory checkpoints.**
+
+The 3-step trigger ("enter Plan Mode for any task with 3+ steps") was ignored because the task felt familiar and routine. The result was shipping v1.0 scripts with 4 BLOCKING and 17 MAJOR issues — including a path traversal vulnerability, no SHA256 verification, inconsistent registry naming, no downgrade protection, and no reboot code propagation in the uninstall script.
+
+The root cause is: **skipping planning does not save time — it front-loads defects that are more expensive to fix later.**
+
+### Heuristic (Prevention)
+**The Enhanced Workflow is not optional for tasks with 3+ steps. No exceptions.**
+
+Specific enforcement rules:
+1. Before ANY download or file creation: write `tasks/todo.md` with checklist and risk assessment.
+2. Before heavy implementation (downloads, installs, bulk file writes): check in with the user.
+3. For every new package: spawn a peer-review subagent before producing the final `.intunewin`.
+4. After every task: update `tasks/todo.md` with post-flight review and update this file.
+
+### Technical Patterns Established (apply to all future packages)
+
+| Pattern | Implementation |
+|---------|----------------|
+| Script structure | `[CmdletBinding()]` + `param()` on every script |
+| Write-Log signature | `[Parameter(Mandatory)] [ValidateNotNullOrEmpty()]` |
+| Log directory validation | Create dir, then write/delete test file before proceeding |
+| Installer path safety | `[IO.Path]::GetFullPath()` + `StartsWith()` check to prevent traversal |
+| Installer integrity | SHA256 hash verified against known-good value at runtime |
+| Version check | Check existing install: skip if same, skip if newer (no downgrade), upgrade if older |
+| Post-install validation | Check for exe on disk + Add/Remove Programs entry |
+| Error logging | Always log `$_.Exception.GetType().FullName` in catch blocks |
+| Detect script catch | Silently `exit 1` — never `Write-Host` on failure path |
+| Detect version comparison | Broad minimum version (e.g., `>= 26.0.0.0`) — document the intent |
+| Uninstall reboot codes | Track `$rebootRequired`; propagate `exit 3010` at end |
+| Uninstall dir cleanup | After MSI uninstall, check and remove known install dirs |
+| Registry naming | `HKLM:\SOFTWARE\[AppName]Installer` (e.g., `CamtasiaInstaller`) |
+| PACKAGE_SETTINGS.md | Must include: dependency versions + registry keys, licensing options, post-deploy validation, troubleshooting table |
+
+### Pattern for Future MSI Packages (Retry Logic)
+The peer reviewer correctly noted that Python has `Invoke-WithRetry` for network operations. For **download-at-install-time** packages (like Python), this is critical. For **bundled MSI** packages (like Camtasia, Chrome, Firefox), the MSI is pre-included in the `.intunewin` — no retry needed for the installer itself. Apply retry only when the script fetches content from the internet at install time.
+
+---
+
+## Lesson 002 — Edge WebView2 Runtime Package (2026-03-25)
+
+### Keywords
+`intune`, `exe`, `webview2`, `evergreen`, `detection`, `registry`, `chromium`, `uninstall`, `dynamic-path`, `peer-review`, `enhanced-workflow`
+
+### What Happened
+Built a complete Intune Win32 package for Microsoft Edge WebView2 Runtime (v146.0.3856.78) as a dependency for Camtasia. This time the Enhanced Workflow was followed correctly from the start: Plan Mode entered, user clarifying questions asked before implementation, peer-review subagent run before packaging.
+
+Peer-review returned PASS WITH REQUIRED FIXES (0 BLOCKING, 4 MAJOR). All 4 MAJOR issues were fixed before the `.intunewin` was built.
+
+### Key Difference from MSI Packages
+WebView2 is an **EXE bootstrapper** (Chromium), not a WiX MSI. This changes several patterns:
+- Install command: `/silent /install --system-level --verbose-logging` (not `msiexec /i /qn`)
+- Detection: NOT in Add/Remove Programs (`SystemComponent = 1`); must use EdgeUpdate registry `pv` value
+- Uninstall path: **dynamic and versioned** — path contains version number that changes after every auto-update
+- Evergreen model: after initial install, Edge Update service silently keeps WebView2 current; no redeployment needed
+
+### Anti-Pattern Caught by Peer Review
+
+**Stale-first detection ordering:**
+The v1.0 detect script checked the custom detection registry (set by the install script) as Method 1, and the EdgeUpdate registry as Method 2. After an auto-update, the custom registry holds the originally-installed version while EdgeUpdate always reflects the current installed version. Checking stale data first is a correctness risk.
+
+**Fix:** For evergreen apps, always check the authoritative live source first. Detection priority should mirror the reliability of the data source, not the order it was written.
+
+**Version-agnostic fallback in uninstall:**
+The v1.0 uninstall fallback picked the most-recently-modified `setup.exe` if the uninstall registry key was missing. After an auto-update, multiple versioned setup.exe copies may exist. The most-recent isn't necessarily the right one for the currently-registered version.
+
+**Fix:** When searching for a versioned binary, prefer a path containing the detected version string (`$pvValue`) before falling back to recency sort.
+
+### Heuristic (Prevention)
+
+**For evergreen apps:** Detection priority = most authoritative live source first. Custom registry values set at install time go last — they are stale after auto-update.
+
+**For versioned uninstall paths:** Never rely on file recency alone when version-specific paths exist. Use the detected version string to select the matching binary first.
+
+### Technical Patterns Established (EXE / Chromium bootstrapper packages)
+
+| Pattern | Implementation |
+|---------|----------------|
+| EXE silent install | `Start-Process` with `/silent /install --system-level --verbose-logging`; **not** `msiexec` |
+| Timeout handling | Manual polling loop (`while (-not $proc.HasExited)`) with `$proc.Kill()` on timeout |
+| Evergreen detection strategy | Any installed version satisfies requirement; no minimum version check |
+| SystemComponent detection | Cannot use Add/Remove Programs — must use EdgeUpdate registry `pv` value |
+| EdgeUpdate GUID (WebView2) | `{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}` at `HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\` |
+| Dynamic uninstall path | Read `UninstallString` from `HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Microsoft EdgeWebView` |
+| Versioned uninstall fallback | Prefer `setup.exe` path containing `$pvValue`; warn if falling back to most-recent |
+| Return value on helper functions | Always check bool return from helper functions that write to registry; log warning if false |
+| SHA256 update documentation | PACKAGE_SETTINGS.md must include step-by-step SHA256 update procedure for EXE packages |
+| No redeployment needed for updates | Document in PACKAGE_SETTINGS.md: Edge Update handles ongoing version updates automatically |
+
+---
+
+## Lesson 003 — IntuneManager PowerShell + WPF Application (2026-03-25)
+
+### Keywords
+`intune`, `powershell`, `wpf`, `msal`, `graph-api`, `runspace`, `dispatcher`, `ps51`, `xaml`, `azure-blob`, `upload`, `winget`, `peer-review`, `enhanced-workflow`
+
+### What Happened
+Built a complete PowerShell + WPF desktop application (IntuneManager) for managing Intune Win32 apps. The application authenticates via MSAL.NET, discovers apps from the Intune tenant via Graph API, and supports creating and updating apps including full chunked Azure Blob upload.
+
+Enhanced Workflow was followed correctly. Plan Mode was entered, user requirements were confirmed, peer review was run, all MINOR issues were fixed. Final state: 16 PS files, 0 parse errors, peer review PASS.
+
+### Critical Dependency: MSAL.NET Version Pin
+
+**MSAL 4.47.x fails on PowerShell 5.1 / .NET Framework.**
+
+MSAL 4.47.x introduced a dependency on `Microsoft.IdentityModel.Abstractions` (v6.22.0+) which is not included in the NuGet package and is not available in .NET Framework / PS 5.1 runtimes. Attempting to `Add-Type` 4.47.x produces:
+
+```
+Could not load file or assembly 'Microsoft.IdentityModel.Abstractions, Version=6.22.0.0'
+```
+
+**Fix:** Pin to **MSAL 4.43.2 net461 build**. This is the last version before the IdentityModel dependency was introduced. It loads cleanly in PS 5.1 with no transitive dependencies.
+
+**Download:** `https://www.nuget.org/packages/Microsoft.Identity.Client/4.43.2` → extract `lib\net461\Microsoft.Identity.Client.dll`
+
+### PS 5.1 Compatibility Gotchas
+
+| Gotcha | Symptom | Fix |
+|--------|---------|-----|
+| `??` null-coalescing operator | `Unexpected token '??'` at parse time | Use `if ($x) { $x } else { $y }` |
+| `?.` null-conditional operator | Same parse error | Use `if ($x) { $x.Prop }` |
+| UTF-8 chars without BOM | Multi-byte characters (em dash `—`, arrow `→`) corrupt as ANSI | Always save PS files with UTF-8 BOM: `[System.Text.UTF8Encoding]::new($true)` |
+| `|` pipe inside method call arg | `Missing ')'` parse error | Extract the piped expression to a separate variable before passing to the method |
+| `$var` in switch hashtable string | Variable not expanded in double-quoted string inside switch block value | Use `$($var)` for interpolation |
+
+### WPF + Runspace Architecture Patterns
+
+| Pattern | Implementation |
+|---------|----------------|
+| STA thread requirement | Auto-relaunch: `if ([Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') { powershell.exe -STA -File $path; exit }` |
+| Background work | `[RunspaceFactory]::CreateRunspace()` with `ApartmentState = MTA`; pass `$SharedState` via `SetVariable` |
+| UI update from background | `$SharedState.Dispatcher.Invoke([System.Action]{ ... })` -- always via Dispatcher, never direct |
+| Shared mutable state | `[hashtable]::Synchronized(@{...})` passed into every runspace |
+| XAML code-behind | No `x:Class` -- all event wiring done in `.xaml.ps1` via `$window.FindName('ControlName')` |
+| ObservableCollection DataGrid | `[System.Collections.ObjectModel.ObservableCollection[PSCustomObject]]::new()` -- all `.Add()/.Clear()` inside `Dispatcher.Invoke` |
+| No XAML `x:Class` | WPF compilation requires C#; PS-only projects must omit `x:Class` entirely |
+
+### Graph API Win32 App Upload Sequence (exact order)
+
+```
+1. POST  /deviceAppManagement/mobileApps                          -> appId
+2. POST  /mobileApps/{appId}/.../contentVersions                  -> contentVersionId
+3. Extract EncryptionInfo from Detection.xml inside .intunewin ZIP
+4. POST  /mobileApps/{appId}/contentVersions/{id}/files           -> fileEntry (azureStorageUri, fileId)
+5. PUT   {sasUri}&comp=block&blockid={id}  (one call per 5 MB chunk)
+6. PUT   {sasUri}?comp=blocklist           (XML block list to finalize blob)
+7. POST  /files/{fileId}/commit            with fileEncryptionInfo body
+8. GET   /files/{fileId}  (poll until uploadState = 'commitFileSuccess', max 120s)
+9. PATCH /mobileApps/{appId}              body: { committedContentVersion: '{contentVersionId}' }
+```
+
+Azure Blob steps (5, 6) use the SAS URI directly -- **no bearer token**. The SAS URI is self-authorizing. If a PUT returns 403 after ~8 min, re-request the file entry to get a fresh SAS URI.
+
+### "Install Latest Stable Version" Pattern
+
+For apps with a known Winget ID, version can be deferred to upload time:
+1. Store `WingetId` and `UseLatestVersion = $true` in wizard state
+2. At build+upload time (not at wizard open): call `Get-LatestWingetVersion -WingetId $id`
+3. Parse `winget.exe show $id --accept-source-agreements` output for `Version:` field
+4. Update `AppVersion` before building the Graph app body
+
+This ensures the `displayVersion` in Intune always reflects the actual installed version, not a stale value from PACKAGE_SETTINGS.md.
+
+### Update All Queue Pattern
+
+When a "Update All" feature calls a view that navigates away on completion, a simple `foreach` loop doesn't work -- the loop fires all `Show-X` calls immediately and only the last navigation survives.
+
+**Fix:** Use a queue stored in SharedState:
+```powershell
+# Dashboard: enqueue all pending items, dequeue first
+$queue = [System.Collections.Generic.Queue[PSCustomObject]]::new()
+foreach ($row in $outdated) { $queue.Enqueue($row) }
+(Get-SharedState)['UpdateQueue'] = $queue
+Show-UpdateView -AppRow ($queue.Dequeue())
+
+# UpdateView OnComplete: chain to next item
+$queue = (Get-SharedState)['UpdateQueue']
+if ($queue -and $queue.Count -gt 0) {
+    Show-UpdateView -AppRow ($queue.Dequeue())
+} else {
+    (Get-SharedState)['UpdateQueue'] = $null
+    Show-Dashboard
+}
+```
+
+This pattern applies whenever a sequential workflow must chain through a navigation-based UI.
+
+---
+
+## Lesson 004 — IntuneManager Runtime Fixes (2026-03-26)
+
+### Keywords
+`wpf`, `xaml`, `dotnet-framework`, `ps51`, `scope`, `msal`, `msal-client-id`, `sta`, `mta`, `runspace`, `AcquireTokenInteractive`, `event-handler`, `dot-source`
+
+### What Happened
+First launch of IntuneManager produced three categories of runtime failures:
+1. **XAML crash** on startup: `StackPanel.Spacing`, `TextBox.PlaceholderText`, `TextBlock.TextTransform`, `TextBlock.LetterSpacing` — all .NET 5 WPF-only properties, not present in .NET Framework 4.x (which PS 5.1 uses)
+2. **WPF event scope failure**: `The term 'Start-Login' is not recognized` — functions defined via dot-sourcing `.xaml.ps1` files were not accessible from WPF button click handlers
+3. **MSAL auth failure**: `AADSTS700016 — Application d1ddf0e4 not found in directory` — the Microsoft Intune PowerShell client ID requires per-tenant admin consent; `AcquireTokenInteractive` was also being called from an MTA runspace, causing silent failure
+
+### Anti-Pattern (Why It Happened)
+
+**XAML properties:** Peer review flagged `Spacing="8"` but accepted it under the assumption that "all Win10/11 machines ship .NET 4.7.2+." This was a category error — `Spacing` is a .NET **5** WPF property, not a .NET Framework 4.x property at any version. The two runtimes are completely separate, not a version progression.
+
+**WPF event scope:** `function Foo { }` declared inside a dot-sourced file exists only in the call-stack scope at the moment of dot-sourcing. WPF event handlers (button clicks) fire in their own scope context that does not inherit from the original dot-source call. This is an inherent PS+WPF integration constraint that is not documented clearly.
+
+**MSAL client ID + STA:** The `d1ddf0e4` client ID was documented as the "Microsoft Intune PowerShell" client, which sounded globally available. In reality it requires explicit admin consent per tenant. Additionally, `AcquireTokenInteractive` was called inside `Invoke-BackgroundOperation` (MTA runspace) to avoid blocking the UI — but MSAL requires STA for interactive login; on MTA it fails silently.
+
+### Heuristic (Prevention)
+
+**XAML runtime audit (add to every WPF build checklist):**
+```
+grep -r "Spacing=" *.xaml
+grep -r "PlaceholderText=" *.xaml
+grep -r "TextTransform=" *.xaml
+grep -r "LetterSpacing=" *.xaml
+grep -r "RevealMode=" *.xaml
+```
+These are ALL .NET 5+ / UWP only. None are available in .NET Framework WPF (PS 5.1 runtime).
+
+**WPF event handlers — mandatory pattern:** Every function that will be called from a WPF event handler MUST be a `$script:` scoped scriptblock variable. Functions defined with `function` are invisible to WPF closures.
+```powershell
+# WRONG -- invisible to WPF events:
+function Do-Thing { ... }
+
+# CORRECT -- accessible from any WPF event handler:
+$script:ViewName_DoThing = { ... }
+# Call site:
+$btnFoo.Add_Click({ & $script:ViewName_DoThing })
+```
+
+**MSAL client IDs for Intune apps:**
+
+| Client ID | Name | Consent model |
+|---|---|---|
+| `d1ddf0e4-d672-4dae-b554-9d5bdfd93547` | Microsoft Intune PowerShell | Requires per-tenant admin consent |
+| `14d82eec-204b-4c2f-b7e8-296a70dab67e` | Microsoft Graph PowerShell | Pre-consented in all M365 tenants ✅ |
+| `04b07795-8ddb-461a-bbee-02f9e1bf7b46` | Microsoft Azure CLI | Pre-consented in all M365 tenants ✅ |
+
+Use `14d82eec` (Microsoft Graph PowerShell) for any app that needs Intune/Graph access without requiring the user/admin to register an Azure app.
+
+**STA/MTA threading rule for MSAL:**
+- `AcquireTokenInteractive` → **MUST run on STA UI thread**. Call it directly in the WPF button click handler.
+- `AcquireTokenWithDeviceCode` → Can run in an MTA background runspace (non-interactive; user authenticates in a separate browser).
+- `AcquireTokenSilent` → Can run in any thread.
+
+**Auth should use `common` authority** (not tenant-specific) when users log in with their own accounts:
+```powershell
+$builder = $builder.WithAuthority('https://login.microsoftonline.com/common')
+```
+TenantId is then extracted from `$result.TenantId` after login — the user doesn't need to supply it.
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---|---|
+| WPF .NET Framework compat | No `Spacing=`, `PlaceholderText=`, `TextTransform=`, `LetterSpacing=` in XAML. Use `Margin` on child elements instead of `Spacing`. |
+| WPF event handler functions | `$script:Prefix_FunctionName = { }` always. Never `function`. |
+| MSAL client for Intune | `14d82eec-204b-4c2f-b7e8-296a70dab67e` (Graph PowerShell) — no registration needed |
+| MSAL authority | `https://login.microsoftonline.com/common` — no tenant ID from user |
+| Interactive login thread | `AcquireTokenInteractive` on STA UI thread only — directly in click handler |
+| System browser | `.WithUseEmbeddedWebView($false)` on `AcquireTokenInteractive` builder — avoids WebView2 parenting issues |
+| Parent HWND (CRITICAL) | `.WithParentActivityOrWindow($hwnd)` is MANDATORY on .NET Framework. Without it, `AcquireTokenInteractive` hangs silently with no error. Get HWND via `(New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle` |
+| Auth test mandate | Test `Connect-IntuneManager` against the actual target tenant before marking Auth phase complete |
+
+---
+
+## Lesson 005 — IntuneManagerUI Deploy Page + IPC Race Conditions (2026-03-30)
+
+### Keywords
+`electron`, `react`, `ipc`, `race-condition`, `useRef`, `state`, `job-queue`, `winget-version`, `two-phase-loading`, `upload-only`, `package-only`, `deploy`
+
+### What Happened
+Three related features were built for the Electron + React UI: (1) a redesigned Deploy page with AI recommendations and decoupled package/deploy workflow; (2) live winget version checking per app in the Dashboard; (3) a sequential Update All queue. Two significant runtime bugs were discovered and fixed:
+
+**Bug 1 — "Deploy to Intune" re-downloaded and re-packaged the app**
+After the package-only job completed, clicking "Yes, Deploy to Intune" was calling `ipcAiDeployApp` with the original text request. Claude then re-ran the full 12-step pipeline from scratch (search → download → package → create → upload) instead of just uploading the already-built `.intunewin`.
+
+**Bug 2 — Clicking "Deploy to Intune" did nothing**
+`job:package-complete` and `job:complete` are emitted back-to-back from the main process. `onJobPackageComplete` set `deployPrompt` via `setState`, but `onJobComplete` immediately called `clearSubs()`. Because both IPC messages arrive nearly simultaneously and React batches state updates, the prompt state was not reliably committed before the component re-rendered — so the button either didn't appear or clicking it had no effect.
+
+### Anti-Pattern (Why It Happened)
+
+**Bug 1:** The "deploy" step simply re-used the full deploy IPC handler (`ipcAiDeployApp`) because no separate "upload only" path existed. The fix required a dedicated `ipc:ai:upload-only` handler that takes `intunewinPath` + `packageSettings` (captured during packaging) and executes only steps 11-12 directly — no Claude loop, no re-download.
+
+**Bug 2:** Using `setState` to pass data between two near-simultaneous IPC event handlers is unsafe. React batches state updates; the second handler (`onJobComplete`) runs before the first handler's state commit is visible to the component.
+
+### Heuristic (Prevention)
+
+**Decoupled pipeline pattern — always capture metadata at tool-call time:**
+```typescript
+// In the packaging loop, capture metadata into module-level variables:
+if (block.name === 'generate_package_settings') {
+  capturedPackageSettings = block.input as Record<string, unknown>
+}
+if (block.name === 'build_package') {
+  if (r.success && r.intunewinPath) builtIntunewinPath = r.intunewinPath
+}
+// Emit both on completion:
+sendEvent('job:package-complete', { jobId, intunewinPath, packageSettings })
+```
+
+**IPC event ordering — use refs for cross-event data handoff:**
+When two IPC events fire in rapid succession and the second event needs data written by the first:
+```typescript
+// WRONG — setState is async, data may not be committed when second event fires:
+onJobPackageComplete(data => {
+  setDeployPrompt({ intunewinPath: data.intunewinPath, ... })  // may not commit in time
+})
+onJobComplete(data => {
+  clearSubs()  // runs before setState above committed
+})
+
+// CORRECT — write to ref (synchronous), read from ref in second handler:
+const packageResultRef = useRef(null)
+
+onJobPackageComplete(data => {
+  packageResultRef.current = { intunewinPath: data.intunewinPath, packageSettings: data.packageSettings }
+})
+onJobComplete(data => {
+  const pkg = packageResultRef.current
+  if (pkg) setDeployPrompt({ ..., ...pkg })  // safe — ref is already written
+  clearSubs()
+})
+```
+
+**Upload-only vs full deploy — always have separate IPC channels:**
+- `ipc:ai:deploy-app` → full 12-step Claude loop (new deployment from scratch)
+- `ipc:ai:package-only` → steps 1-10 only (build the `.intunewin`, no upload)
+- `ipc:ai:upload-only` → steps 11-12 only (create Intune record + upload existing `.intunewin`)
+
+Never reuse the full deploy handler when the user has already built the package.
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---|---|
+| Two-phase catalog loading | Phase 1: render Intune apps immediately (`setApps`, `setLoading(false)`). Phase 2: `Promise.all` concurrent winget lookups, `setApps(prev => prev.map(...))` per result. Never block initial render on slow PS calls. |
+| Reactive per-row version checking | Set `versionChecking: true` on all rows initially; update individual rows to `versionChecking: false` + `latestVersion` as each winget call resolves. UI shows `checking...` inline. |
+| Semver comparison | `v.split('.').map(n => parseInt(n) || 0)` + element-by-element comparison. Catch non-semver versions (date-based, etc.) and return `'unknown'` rather than throwing. |
+| Update All sequential queue | Serialize updatable apps as JSON in `?updateAll=` query param. On Deploy page mount, load into `updateQueueRef`. After each deploy's `onJobComplete`, advance `updateQueueIndexRef` and call `startPackageJob` for next item. Never chain from render — chain from the completion handler. |
+| Query param cleanup | `setSearchParams({}, { replace: true })` immediately after reading params on mount — prevents re-triggering on back navigation. |
+| Module-level recommendation cache | `let cachedRecommendations: AppRecommendation[] | null = null` outside the hook function. On mount: if cache populated, use it; otherwise fetch and populate. Prevents re-calling Claude API on every page remount. |
+| PACKAGE_SETTINGS.md parsing | Add new fields by extending the regex pattern in `Get-PackageSettings.ps1`. Always return partial results (never throw on missing fields) — use `$null` for missing values. |
+| IPC wrapper type discipline | Every new IPC channel needs: (1) interface in `src/types/ipc.ts`; (2) typed wrapper in `src/lib/ipc.ts`; (3) handler in `electron/ipc/`. Never use `unknown` return types on wrappers that callers act on. |
+
+---
+
+## Lesson 006 — Graph API create_intune_app Failures (2026-03-30)
+
+### Keywords
+`graph-api`, `ps51`, `powershell`, `json`, `arg-mangling`, `spawn`, `child-process`, `hashtable`, `array`, `single-element`, `sas-uri`, `upload`, `content-file`, `polling`, `httprequest`, `electron`, `create-intune-app`
+
+### What Happened
+
+Three separate bugs caused `create_intune_app` (step 11) and `upload_to_intune` (step 12) to fail. All three required separate investigation sessions because each fix exposed the next bug.
+
+**Bug 1 — `minimumSupportedWindowsRelease` wrong enum format**
+Graph beta API rejected `W10_21H2` with `"Unknown MinimumSupportedWindowsRelease: W10_21H2"`. The correct value is `windows10_21H2`. All `W10_*`/`W11_*` prefixed values are invalid for the beta endpoint.
+
+**Bug 2 — PS 5.1 JSON argument mangling (CLI → child_process)**
+Node.js `spawn('powershell.exe', [..., '-BodyJson', jsonString])` passes the JSON string as a command-line argument. PowerShell 5.1 converts the argument from JSON string notation to its internal hashtable representation before the script receives it. The script received `{@odata.type:#microsoft.graph.win32LobApp,...}` instead of `{"@odata.type":"#microsoft.graph.win32LobApp",...}`. This triggered `ConvertFrom-Json` error: `Invalid object passed in, ':' or '}' expected`.
+
+**Bug 3 — `ConvertTo-Hashtable` single-element array collapse**
+After fixing arg mangling via temp file, still got HTTP 400. The PS script read JSON from file, called `ConvertFrom-Json` → `ConvertTo-Hashtable` → stored in hashtable → `ConvertTo-Json` to send to Graph. During this round-trip, a single-element array `detectionRules: [{...}]` became a plain object `detectionRules: {...}`. PS 5.1 serializes single-element arrays as bare objects when they pass through hashtable storage. Graph API requires an array and rejected the request with 400.
+
+**Bug 4 — SAS URI not yet available after New-ContentFile POST (upload step 12)**
+After app creation succeeded, upload failed with `"SAS URI not returned from Graph API for file entry <id>"`. The Graph API creates file entries asynchronously — immediately after `POST .../contentVersions/{id}/files`, the response contains an `id` but `azureStorageUri` is empty. The code immediately checked for the SAS URI and threw. The fix is to poll `GET .../files/{fileId}` until `azureStorageUri` is populated (up to 60 seconds) before proceeding to the blob upload.
+
+### Anti-Pattern (Why It Happened)
+
+**Bugs 1-3:** The entire `create_intune_app` code path was never exercised against the live Graph API endpoint before the app was deployed to users. The `minimumSupportedWindowsRelease` enum values were taken from docs/examples without empirical validation. The PS 5.1 argument-passing and hashtable round-trip bugs are not obvious from reading the code — they only manifest at runtime.
+
+**Bug 4:** The Graph API documentation describes `azureStorageUri` as returned by the POST, but the real behavior is async provisioning. The previous WPF implementation used a short `Start-Sleep` after the file creation call, which masked the timing issue. The Electron rewrite omitted this timing requirement.
+
+### Heuristic (Prevention)
+
+**Test the live Graph API for every new endpoint before shipping.** Use a standalone PS test script that constructs and sends the exact same request body the production code will send. Run it against the real tenant.
+
+**Never pass JSON as a CLI argument from Node.js → PowerShell.** JSON strings contain `{ } : [ ] "` characters that PS 5.1 transforms. Always write to a temp file and pass the file path.
+
+**Never round-trip JSON through `ConvertTo-Hashtable → ConvertTo-Json` when the original JSON structure must be preserved exactly.** Use `[System.Net.HttpWebRequest]` with the raw JSON bytes, or use `Invoke-RestMethod` with `-Body $jsonString -ContentType 'application/json'` directly.
+
+**After creating a Graph API file entry, poll until the SAS URI is populated before attempting the upload.** The `azureStorageUri` field is provisioned asynchronously. Poll `GET .../files/{id}` with a 5-second interval, up to 60 seconds.
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---------|----------------|
+| `minimumSupportedWindowsRelease` valid beta enum values | Windows 10: `windows10_21H2`, `windows10_22H2`, `2H20`, `2004`, `1903`, `1809`, `1607`. Windows 11: `Windows11_21H2`, `Windows11_22H2`, `Windows11_23H2`, `Windows11_24H2`. Never use `W10_*` or `W11_*` prefix format. |
+| Node.js → PS JSON arg passing | Write JSON to temp file with `fs.writeFileSync(tmpPath, json, 'utf8')`, pass `-BodyJsonPath tmpPath`. Clean up in `finally` block. |
+| PS → Graph API: preserve JSON structure | Use `[System.Net.HttpWebRequest]` with `$req.GetRequestStream()` to POST raw bytes. No `ConvertTo-Hashtable → ConvertTo-Json` round-trip. |
+| Graph file entry SAS URI | After `POST .../files`, poll `GET .../files/{id}` until `azureStorageUri` is non-empty (5s interval, 60s max). Throw if not populated. |
+| Graph error details via PS | `Invoke-RestMethod` swallows response bodies on error. Use `[System.Net.HttpWebRequest]` + `$_.Exception.Response.GetResponseStream()` via `StreamReader` to capture the full error JSON from Graph. |
+
+---
+
+## Lesson 007 — Deploy Page Refactor: PS Filename→Folder Matching + PACKAGE_SETTINGS.md Format Variance (2026-03-30)
+
+### Keywords
+`powershell`, `ps51`, `markdown`, `package-settings`, `filename-matching`, `fuzzy-match`, `deploy-button`, `null-guard`, `ui-feedback`, `enhanced-workflow`
+
+### What Happened
+Built `List-IntunewinPackages.ps1` to scan the output folder for `.intunewin` files and match each to its `PACKAGE_SETTINGS.md`. The script shipped with exact string matching. At runtime: (1) the Deploy button did nothing for all 16 packages — root cause was a null guard in `startUploadOnlyJob` silently returning when `packageSettings` was null, because no PACKAGE_SETTINGS.md was being found; (2) PACKAGE_SETTINGS.md was not being found because app names parsed from filenames (`Notepad++`, `FigmaSetup`) didn't exactly match source folder names (`NotepadPlusPlus`, `Figma`); (3) even when the folder was found, fields weren't parsed from WSL's `PACKAGE_SETTINGS.md` which uses `| **Field** |` bold formatting.
+
+### Anti-Pattern (Why It Happened)
+**Silent failure with no UI feedback.** The function returned `null` when settings weren't found, the null guard in the job function silently returned with no error, and the button appeared enabled but clicked to nothing. The user had no way to know the settings lookup was failing.
+
+**Exact matching without testing against real data.** The PS script was written with `$appName -eq $folderName` without first checking what actual folder names exist in the Source directory. A one-minute `Get-ChildItem` call would have revealed the mismatch immediately.
+
+### Heuristic (Prevention)
+
+**Always run new PS scripts against the actual data directory before shipping.** For any script that maps filenames to folder names: run it with real paths and log which items matched and which didn't. Never assume names will be consistent.
+
+**When a button's action can silently no-op, surface the reason in the UI.** A disabled button with a tooltip ("No PACKAGE_SETTINGS.md found — cannot deploy") is always better than an enabled button that does nothing.
+
+**PACKAGE_SETTINGS.md format is not standardized across packages.** When parsing markdown tables from files generated by different tools/people, always handle both `| Field |` and `| **Field** |` variants. Strip `**` before using the parsed value.
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---------|----------------|
+| Filename → folder fuzzy matching (PS) | `Find-SourceFolder`: 4 levels — exact case-insensitive → normalized (strip spaces/hyphens/dots/+) → normalized prefix → normalized substring |
+| Normalize function (PS) | `($s.ToLower() -replace '[\s\-_\.\+]', '')` — strips common separators before comparing |
+| Markdown bold field parsing | `Parse-MdField` regex: `\|\s*\*{0,2}$escaped\*{0,2}\s*\|` — matches both plain and bold; `Strip-MdBold` strips `**` from parsed value |
+| Silent null guard → UI disabled | When a function silently returns on null input, mirror that condition as a `disabled` prop on the button with a `title` tooltip explaining why |
+| Real data test before shipping | For any PS script that does file/folder matching: test with `-OutputFolder` and `-SourceRootPath` pointing at actual project directories before committing |
+
+---
+
+## Lesson 008 — SQLite Schema/Code Mismatch: Silent DB Write Failure (2026-03-31)
+
+### Keywords
+`electron`, `sqlite`, `better-sqlite3`, `schema`, `migration`, `tenant-config`, `isconnected`, `silent-failure`, `catch-non-fatal`, `token-expiry`, `dashboard`, `react-context`
+
+### What Happened
+
+Dashboard showed "Not connected" after every page navigation despite the user having successfully authenticated. Two rounds of React-layer fixes (TenantContext polling interval, removed stale refs) confirmed the source code was correct, yet the bug persisted.
+
+Root cause: the `tenant_config` table in `db/schema.sql` was **missing the `token_expiry` column**. The IPC handler for `ipc:ps:connect-tenant` ran:
+
+```sql
+INSERT OR REPLACE INTO tenant_config
+  (id, tenant_id, username, token_expiry, connected_at, updated_at)
+  VALUES (1, ?, ?, ?, ...)
+```
+
+`better-sqlite3` throws `SqliteError: table tenant_config has no column named token_expiry`. This was caught by `catch { /* non-fatal */ }` — so the entire INSERT was silently discarded. The DB row was never written.
+
+On every navigation, `TenantContext.refreshStatus()` polled the DB, found an empty `tenant_config` table, and returned `{ isConnected: false }`. The 60-second polling interval that was supposed to fix the issue was now actively confirming "Not connected" every 60 seconds.
+
+Why first-load appeared to work: `connect()` in `TenantContext` sets React state directly from the PS script response — it doesn't read the DB. So the Dashboard immediately after login showed "Connected." But any subsequent navigation caused a DB read → empty → "Not connected."
+
+### Anti-Pattern (Why It Happened)
+
+**Schema and calling code were written in separate sessions with no cross-validation.** The `connect-tenant` handler was written knowing it needed to persist `token_expiry`, but the schema was written without it. The `catch { /* non-fatal */ }` wrapper on the INSERT was meant to handle transient DB errors — it inadvertently masked a structural schema bug.
+
+**The React-layer fix was applied first without fully tracing the data path.** The polling interval in `TenantContext` was a valid fix for a stale-state issue, but it didn't surface the underlying DB problem because the error was silent.
+
+### Heuristic (Prevention)
+
+**When a DB write is wrapped in `catch { /* non-fatal */ }`, add at minimum a `console.error` or log so schema mismatches are visible immediately:**
+```typescript
+try {
+  db.prepare('INSERT INTO ... (col1, col2) VALUES (?, ?)').run(...)
+} catch (e) {
+  console.error('[db] connect-tenant write failed:', e)  // catches schema bugs immediately
+}
+```
+
+**When debugging a UI state bug that involves persisted data, check the DB layer first** — before touching React state, refs, or effects. The fastest diagnosis path is: "Can I see the DB row that should exist?" If the row is absent, the bug is in the write path, not the read path.
+
+**Always cross-validate INSERT column lists against the current schema** before writing any IPC handler that persists data. A `SELECT * FROM sqlite_master WHERE type='table' AND name='...'` check during development takes 30 seconds and would catch this class of bug immediately.
+
+**Schema changes to existing tables require migrations.** `CREATE TABLE IF NOT EXISTS` does not add new columns to an existing table. Any time a column is added to `schema.sql`, a corresponding `ALTER TABLE ... ADD COLUMN` migration must be run at startup:
+
+```typescript
+// In createDatabase():
+const cols = db.prepare("PRAGMA table_info(your_table)").all() as Array<{ name: string }>
+if (!cols.some(c => c.name === 'new_column')) {
+  db.exec("ALTER TABLE your_table ADD COLUMN new_column TEXT")
+}
+```
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---------|----------------|
+| DB write error visibility | Never use bare `catch { /* non-fatal */ }` on INSERT/UPDATE statements. Always log: `catch (e) { console.error('[db] write failed:', e) }` |
+| Schema migration pattern | After `database.exec(schema)`, run `PRAGMA table_info(tablename)` and `ALTER TABLE ... ADD COLUMN` for each column that may be missing in existing DBs |
+| State bug diagnosis order | For "shows wrong value after navigation" bugs: (1) check DB row exists; (2) check IPC handler returns correct value; (3) check React context reads it; (4) check component re-renders on change. Start at layer 1. |
+| `CREATE TABLE IF NOT EXISTS` limitation | This DDL statement only creates the table if absent. It does NOT add missing columns to an existing table. Schema changes to deployed tables always require `ALTER TABLE`. |
+| Electron `userData` path | `app.getPath('userData')` returns `%APPDATA%\<appName>` where `appName` is the `name` field in `package.json`. For `"name": "intune-manager-ui"`, DB is at `C:\Users\<user>\AppData\Roaming\intune-manager-ui\intunemanager.db`. |
+
+---
+
+## Lesson Template (copy for new entries)
+
+```
+## Lesson 00X — [App/Task] ([Date])
+
+### Keywords
+`keyword1`, `keyword2`
+
+### What Happened
+[Description of the mistake or gap]
+
+### Anti-Pattern (Why It Happened)
+[Root cause — the "why"]
+
+### Heuristic (Prevention)
+[Concrete rule to prevent recurrence]
+
+### Technical Patterns Established
+[Any reusable patterns discovered]
+```

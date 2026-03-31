@@ -1,0 +1,61 @@
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      Background="#1E1E2E">
+    <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <!-- Header -->
+    <Border Grid.Row="0" Background="#1A1A2C" Padding="20,14" BorderBrush="#3A3A55" BorderThickness="0,0,0,1">
+        <Grid>
+            <StackPanel>
+                <TextBlock x:Name="AppTitle" Text="App Detail" FontSize="18" FontWeight="SemiBold" Foreground="#E2E2F0"/>
+                <TextBlock x:Name="AppSubtitle" Text="" FontSize="12" Foreground="#9999BB" Margin="0,2,0,0"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <Button x:Name="BtnBack" Content="← Back" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0"/>
+                <Button x:Name="BtnUpdate" Content="▲ Rebuild + Update Intune"
+                        Style="{StaticResource PrimaryButton}" Visibility="Collapsed"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+
+    <!-- Content: two columns -->
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <Grid Margin="20" HorizontalAlignment="Stretch">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="20"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- LOCAL PACKAGE -->
+            <Border Grid.Column="0" Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="LOCAL PACKAGE" Style="{StaticResource SectionHeader}" Margin="0,0,0,8"/>
+                    <Grid x:Name="LocalGrid"/>
+                </StackPanel>
+            </Border>
+
+            <!-- INTUNE APP -->
+            <Border Grid.Column="2" Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="INTUNE APP" Style="{StaticResource SectionHeader}" Margin="0,0,0,8"/>
+                    <Grid x:Name="IntuneGrid"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </ScrollViewer>
+
+    <!-- Footer -->
+    <Border Grid.Row="2" Background="#1A1A2C" Padding="20,12" BorderBrush="#3A3A55" BorderThickness="0,1,0,0">
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="BtnViewAssignments" Content="View Assignments"
+                    Style="{StaticResource SecondaryButton}" Visibility="Collapsed" Margin="0,0,10,0"/>
+            <Button x:Name="BtnRebuildUpdate" Content="▲ Rebuild + Update Intune"
+                    Style="{StaticResource PrimaryButton}" Visibility="Collapsed"/>
+        </StackPanel>
+    </Border>
+</Grid>

@@ -1,0 +1,53 @@
+# Node / Electron build artifacts
+IntuneManagerUI/node_modules/
+IntuneManagerUI/dist/
+IntuneManagerUI/dist-electron/
+IntuneManagerUI/release/
+IntuneManagerUI/*.tsbuildinfo
+
+# Electron build output (installers)
+IntuneManagerUI/out/
+
+# Local dev environment
+IntuneManagerUI/.env
+IntuneManagerUI/.env.local
+
+# Downloaded installers and generated packages
+Source/*/
+Output/
+
+# SQLite database (contains session tokens and tenant config)
+*.db
+*.db-shm
+*.db-wal
+
+# MSAL token cache (DPAPI-encrypted but should not be committed)
+IntuneManager/Assets/token_cache.bin
+*.token_cache
+
+# Screenshot files
+*.png
+*.jpg
+*.jpeg
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# OneDrive shadow files and upload stubs
+nul
+null
+_ul
+_ul-*
+
+# Claude Code internal files
+.claude/
+
+# Miscellaneous root-level files not part of the project
+Wireshark.png
+logos/
+package-lock.json
+
+# Empty directory placeholder
+IntuneManagerUI/tasks/

@@ -1,0 +1,89 @@
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      Background="#1E1E2E">
+    <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <!-- Header -->
+    <Border Grid.Row="0" Background="#1A1A2C" Padding="20,14" BorderBrush="#3A3A55" BorderThickness="0,0,0,1">
+        <Grid>
+            <StackPanel>
+                <TextBlock x:Name="UpdateTitle" Text="Update App" FontSize="18" FontWeight="SemiBold" Foreground="#E2E2F0"/>
+                <TextBlock x:Name="UpdateSubtitle" Text="" FontSize="12" Foreground="#9999BB" Margin="0,2,0,0"/>
+            </StackPanel>
+            <Button x:Name="BtnBack" Content="← Back" Style="{StaticResource SecondaryButton}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center"/>
+        </Grid>
+    </Border>
+
+    <!-- Version diff + options -->
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="20">
+            <!-- Version comparison table -->
+            <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Text="VERSION COMPARISON" Style="{StaticResource SectionHeader}"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Property" Foreground="#9999BB" FontWeight="SemiBold" FontSize="11"/>
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="Current (Intune)" Foreground="#9999BB" FontWeight="SemiBold" FontSize="11"/>
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="New (Local)" Foreground="#9999BB" FontWeight="SemiBold" FontSize="11"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Version" Foreground="#E2E2F0" Margin="0,8,0,0"/>
+                        <TextBlock x:Name="OldVersion" Grid.Row="1" Grid.Column="1" Text="--" Foreground="#F7A144" Margin="0,8,0,0"/>
+                        <TextBlock x:Name="NewVersion" Grid.Row="1" Grid.Column="2" Text="--" Foreground="#3DDC84" Margin="0,8,0,0"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Display Name" Foreground="#E2E2F0" Margin="0,6,0,0"/>
+                        <TextBlock x:Name="OldName" Grid.Row="2" Grid.Column="1" Text="--" Foreground="#9999BB" Margin="0,6,0,0"/>
+                        <TextBlock x:Name="NewName" Grid.Row="2" Grid.Column="2" Text="--" Foreground="#9999BB" Margin="0,6,0,0"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Options -->
+            <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Text="UPDATE OPTIONS" Style="{StaticResource SectionHeader}"/>
+                    <CheckBox x:Name="ChkRebuild" Content="Rebuild .intunewin package" IsChecked="True"
+                              Foreground="#E2E2F0" FontSize="13" Margin="0,0,0,12"/>
+                    <CheckBox x:Name="ChkUpload" Content="Upload new content to Intune" IsChecked="True"
+                              Foreground="#E2E2F0" FontSize="13" Margin="0,0,0,12"/>
+                    <CheckBox x:Name="ChkUpdateMeta" Content="Update app metadata (version, description)" IsChecked="True"
+                              Foreground="#E2E2F0" FontSize="13"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Progress / log output -->
+            <Border x:Name="ProgressPanel" Style="{StaticResource Card}" Visibility="Collapsed">
+                <StackPanel>
+                    <TextBlock Text="PROGRESS" Style="{StaticResource SectionHeader}"/>
+                    <ProgressBar x:Name="UpdateProgress" Height="8" Minimum="0" Maximum="100" Value="0"
+                                 Foreground="#4F8EF7" Background="#3A3A55" BorderThickness="0" Margin="0,0,0,6"/>
+                    <TextBlock x:Name="ProgressLabel" Text="Starting..." Foreground="#9999BB" FontSize="11"/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+
+    <!-- Footer buttons -->
+    <Border Grid.Row="3" Background="#1A1A2C" Padding="20,12" BorderBrush="#3A3A55" BorderThickness="0,1,0,0">
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="BtnCancelOp" Content="Cancel" Style="{StaticResource SecondaryButton}"
+                    Visibility="Collapsed" Margin="0,0,10,0"/>
+            <Button x:Name="BtnRunUpdate" Content="▲ Run Update" Style="{StaticResource PrimaryButton}"/>
+        </StackPanel>
+    </Border>
+</Grid>

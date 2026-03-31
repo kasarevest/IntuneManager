@@ -1,0 +1,40 @@
+appId: com.vestmark.intune-manager-ui
+productName: IntuneManager
+copyright: "Copyright 2026 Vestmark, Inc."
+artifactName: "${productName}-Setup-${version}.exe"
+
+directories:
+  buildResources: resources
+  output: dist-installer
+
+files:
+  - "dist/**/*"
+  - "dist-electron/**/*"
+  - "electron/ps-scripts/**/*"
+  - "!node_modules/.cache"
+
+# PS scripts must be on disk (not inside asar) because powershell.exe -File cannot execute from asar archive
+asarUnpack:
+  - "electron/ps-scripts/**/*"
+
+extraResources:
+  - from: "../IntuneManager/Lib"
+    to: "IntuneManager/Lib"
+  - from: "../IntuneManager/Assets/Microsoft.Identity.Client.dll"
+    to: "IntuneManager/Assets/Microsoft.Identity.Client.dll"
+  - from: "../IntuneWinAppUtil.exe"
+    to: "IntuneWinAppUtil.exe"
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+npmRebuild: true
