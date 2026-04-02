@@ -15,6 +15,13 @@ export interface SaveSettingsReq {
   claudeApiKey?: string
   defaultMinOs?: string
   logRetentionDays?: number
+  awsRegion?: string
+  awsBedrockModelId?: string
+}
+
+export interface AwsSsoLoginRes {
+  success: boolean
+  error?: string
 }
 
 // PS Bridge

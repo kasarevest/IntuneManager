@@ -1408,3 +1408,109 @@ Logic flow after fix:
 
 ---
 
+# Task: Settings Page — Dual Claude Connection (API + AWS Bedrock SSO) (2026-04-01)
+
+## Pre-Flight Plan
+
+### Spec
+`docs/specs/feature-spec-ai_connection.md`
+
+### Objective
+Update the Settings page to support two Claude connection methods:
+1. **Direct Claude API** — existing Anthropic API key field (already present)
+2. **AWS Bedrock (SSO)** — AWS Region + Bedrock Model ID fields + "Login with AWS SSO" button
+
+Validation: save succeeds if either method is configured. If neither is present, show:
+> "At least one Claude connection method is required."
+
+### Lessons Consulted
+- **Lesson 001:** Enhanced Workflow mandatory. Plan/verification/post-flight.
+- **Lesson 005 (IPC):** All new IPC round-trips need matching types in `ipc.ts` and wrappers in `lib/ipc.ts`.
+
+### Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| AWS SSO login (`aws sso login`) not installed on all machines | High | Low | Button shows error if AWS CLI not found; fields still saveable without running SSO |
+| `SettingsGetRes` returns masked API key — validation logic reads empty string as "not configured" | Certain | Medium | Check masked key server-side: if `claude_api_key_encrypted` row exists in DB → treat API as configured |
+| New Bedrock fields missing on first load (older DB) — causes undefined rendering | Low | Low | All fields default to `''` in state; settings.ts upserts only when value is present |
+| Form save does not touch paths/defaults when only Claude section changed | None | None | Save already sends all fields; no partial save needed |
+
+### Side-Effect Audit
+1. `ai-agent.ts` reads only `claude_api_key_encrypted` — unchanged; Bedrock credential path is a future concern, not in this spec.
+2. `SettingsGetRes` extension is additive — existing callers unaffected.
+3. Validation added to `handleSave` only — no impact on path/defaults sections.
+
+### Dependency Graph
+```
+types/app.ts (AppSettings + 2 fields)
+  ↓
+types/ipc.ts (SaveSettingsReq + 2 fields; new AwsSsoLoginRes)
+  ↓
+lib/ipc.ts (SettingsGetRes + 2 fields; ipcAwsSsoLogin wrapper)
+  ↓
+electron/ipc/settings.ts (read/write aws_region, aws_bedrock_model_id)
+electron/ipc/ps-bridge.ts (ipc:aws:sso-login handler)
+  ↓
+src/settings/GeneralTab.tsx (UI: two method cards + validation)
+```
+
+### Checklist
+
+- [x] 1. `src/types/app.ts` — add `awsRegion`, `awsBedrockModelId` to `AppSettings`
+- [x] 2. `src/types/ipc.ts` — add `awsRegion`, `awsBedrockModelId` to `SaveSettingsReq`; add `AwsSsoLoginRes`
+- [x] 3. `src/lib/ipc.ts` — add `awsRegion?`, `awsBedrockModelId?`, `claudeApiKeyConfigured?` to `SettingsGetRes`; add `ipcAwsSsoLogin`
+- [x] 4. `electron/ipc/settings.ts` — read/write `aws_region`, `aws_bedrock_model_id`; expose `claudeApiKeyConfigured` flag
+- [x] 5. `electron/ipc/ps-bridge.ts` — register `ipc:aws:sso-login` handler (runs `aws sso login`)
+- [x] 6. `src/settings/GeneralTab.tsx` — redesign Claude AI card with two method sections + save validation
+- [x] 7. `npx tsc --noEmit` — 0 errors
+- [x] 8. Post-flight review written
+
+---
+
+## Post-Flight Review
+
+### Evidence of Correctness
+
+```
+npx tsc --noEmit → (no output, exit 0)
+0 errors across all changed files  ✅
+```
+
+**Files changed:**
+```
+src/types/app.ts                      — awsRegion, awsBedrockModelId added to AppSettings
+src/types/ipc.ts                      — same fields in SaveSettingsReq; AwsSsoLoginRes added
+src/lib/ipc.ts                        — SettingsGetRes extended; ipcAwsSsoLogin wrapper added
+electron/ipc/settings.ts              — get/save handlers updated for aws_region, aws_bedrock_model_id; claudeApiKeyConfigured flag
+electron/ipc/ps-bridge.ts            — ipc:aws:sso-login handler registered
+src/settings/GeneralTab.tsx           — full Claude AI section redesign with dual-method UI + validation
+```
+
+### Spec Coverage
+
+| Spec requirement | Implemented |
+|-----------------|-------------|
+| Direct Claude API configuration | ✅ Existing API key field retained; "Configured" badge when key present |
+| AWS SSO login for AWS Bedrock access | ✅ Region + Model ID fields + "Login with AWS SSO" button (runs `aws sso login`) |
+| At least one method required | ✅ Save blocked with clear error if both methods unconfigured |
+| UI clearly shows two optional-but-at-least-one methods | ✅ Two distinct method blocks with numbered badges and "or" divider |
+
+### Side-Effect Audit
+
+| Downstream | Impact |
+|-----------|--------|
+| `ai-agent.ts` | None — Bedrock routing not in scope; existing API key path unchanged |
+| `ipcSettingsSave` callers | None — new fields are optional; existing saves omit them without issue |
+| `GeneralTab` validation | Additive — validation only blocks save when both methods are empty; has no effect on path/defaults sections |
+
+### Workflow Compliance
+- ✅ Spec read before any code changes
+- ✅ Pre-flight plan written and user-approved before implementation
+- ✅ Dependency graph followed (types → IPC → electron handlers → UI)
+- ✅ tsc: 0 errors
+- ✅ Post-flight documented
+- ✅ Side-effect audit performed
+
+---
+

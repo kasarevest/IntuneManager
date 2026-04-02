@@ -286,6 +286,34 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
       return { success: false, error: (err as Error).message }
     }
   })
+
+  // AWS SSO login — launches `aws sso login` for Bedrock access
+  ipcMain.handle('ipc:aws:sso-login', async (_event, req: { profile?: string }) => {
+    return new Promise<{ success: boolean; error?: string }>((resolve) => {
+      const args = ['sso', 'login']
+      if (req.profile) args.push('--profile', req.profile)
+
+      const proc = spawn('aws', args, {
+        shell: true,
+        windowsHide: false  // show terminal so user can complete SSO browser flow
+      })
+
+      let stderr = ''
+      proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve({ success: true })
+        } else {
+          resolve({ success: false, error: stderr.trim() || `aws sso login exited with code ${code}` })
+        }
+      })
+
+      proc.on('error', (err) => {
+        resolve({ success: false, error: `AWS CLI not found or failed to start: ${err.message}` })
+      })
+    })
+  })
 }
 
 export { runPsScript }

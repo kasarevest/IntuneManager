@@ -10,7 +10,8 @@ import type {
   GetRecommendationsRes,
   ListPackagesRes,
   GetDevicesRes,
-  TriggerDeviceActionRes
+  TriggerDeviceActionRes,
+  AwsSsoLoginRes
 } from '../types/ipc'
 import type { LogEntry } from '../types/app'
 
@@ -71,6 +72,9 @@ export interface SettingsGetRes {
   claudeApiKey?: string
   defaultMinOs?: string
   logRetentionDays?: number
+  awsRegion?: string
+  awsBedrockModelId?: string
+  claudeApiKeyConfigured?: boolean
   error?: string
 }
 
@@ -132,6 +136,10 @@ export const ipcPsTriggerDriverUpdate = (deviceId: string): Promise<TriggerDevic
 
 export const ipcPsDownloadDiagnostics = (deviceId: string, deviceName: string): Promise<TriggerDeviceActionRes> =>
   api.invoke('ipc:ps:download-diagnostics', { deviceId, deviceName }) as Promise<TriggerDeviceActionRes>
+
+// --- AWS ---
+export const ipcAwsSsoLogin = (profile?: string): Promise<AwsSsoLoginRes> =>
+  api.invoke('ipc:aws:sso-login', { profile }) as Promise<AwsSsoLoginRes>
 
 // --- Event subscriptions ---
 export const onJobLog = (callback: (data: LogEntry) => void): (() => void) =>

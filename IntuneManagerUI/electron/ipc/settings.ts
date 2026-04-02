@@ -48,16 +48,20 @@ export function registerSettingsHandlers(db: Database): void {
       const settings: Record<string, string> = {}
       for (const row of rows) settings[row.key] = row.value
 
+      const hasApiKey = !!settings['claude_api_key_encrypted']
       return {
         success: true,
         intunewinToolPath: settings['intunewin_tool_path'] ?? '',
         sourceRootPath: settings['source_root_path'] ?? '',
         outputFolderPath: settings['output_folder_path'] ?? '',
-        claudeApiKey: settings['claude_api_key_encrypted']
+        claudeApiKey: hasApiKey
           ? decrypt(settings['claude_api_key_encrypted']).replace(/.(?=.{4})/g, '*')
           : '',  // masked for display
+        claudeApiKeyConfigured: hasApiKey,
         defaultMinOs: settings['default_min_os'] ?? 'W10_21H2',
-        logRetentionDays: parseInt(settings['log_retention_days'] ?? '30')
+        logRetentionDays: parseInt(settings['log_retention_days'] ?? '30'),
+        awsRegion: settings['aws_region'] ?? '',
+        awsBedrockModelId: settings['aws_bedrock_model_id'] ?? ''
       }
     } catch (err) {
       return { success: false, error: (err as Error).message }
@@ -80,6 +84,8 @@ export function registerSettingsHandlers(db: Database): void {
     claudeApiKey?: string
     defaultMinOs?: string
     logRetentionDays?: number
+    awsRegion?: string
+    awsBedrockModelId?: string
   }) => {
     try {
       const upsert = db.prepare('INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime(\'now\'))')
@@ -92,6 +98,8 @@ export function registerSettingsHandlers(db: Database): void {
       }
       if (req.defaultMinOs !== undefined) upsert.run('default_min_os', req.defaultMinOs)
       if (req.logRetentionDays !== undefined) upsert.run('log_retention_days', String(req.logRetentionDays))
+      if (req.awsRegion !== undefined) upsert.run('aws_region', req.awsRegion)
+      if (req.awsBedrockModelId !== undefined) upsert.run('aws_bedrock_model_id', req.awsBedrockModelId)
 
       return { success: true }
     } catch (err) {
