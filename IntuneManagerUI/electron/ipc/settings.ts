@@ -68,6 +68,15 @@ export function registerSettingsHandlers(db: Database): void {
     }
   })
 
+  ipcMain.handle('ipc:settings:clear-ai-cache', () => {
+    try {
+      db.prepare("DELETE FROM app_settings WHERE key = 'recommendations_cache'").run()
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
+  })
+
   ipcMain.handle('ipc:settings:get-api-key', () => {
     try {
       const row = db.prepare("SELECT value FROM app_settings WHERE key = 'claude_api_key_encrypted'").get() as { value: string } | undefined
