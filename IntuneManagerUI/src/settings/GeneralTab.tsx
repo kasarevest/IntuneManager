@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import type { AppSettings } from '../types/app'
-import { ipcSettingsGet, ipcSettingsSave, ipcDialogOpenFile, ipcDialogOpenFolder, ipcAwsSsoLogin } from '../lib/ipc'
+import { ipcSettingsGet, ipcSettingsSave, ipcDialogOpenFile, ipcDialogOpenFolder, ipcAwsSsoLogin, ipcSettingsClearAiCache } from '../lib/ipc'
 
 export default function GeneralTab() {
   const [settings, setSettings] = useState<AppSettings>({
@@ -19,6 +19,8 @@ export default function GeneralTab() {
   const [error, setError] = useState('')
   const [ssoLoggingIn, setSsoLoggingIn] = useState(false)
   const [ssoStatus, setSsoStatus] = useState<{ success: boolean; message: string } | null>(null)
+  const [clearingCache, setClearingCache] = useState(false)
+  const [cacheCleared, setCacheCleared] = useState(false)
 
   useEffect(() => {
     const load = async () => {
@@ -31,8 +33,8 @@ export default function GeneralTab() {
           claudeApiKey: res.claudeApiKey ?? '',
           defaultMinOs: res.defaultMinOs ?? 'W10_21H2',
           logRetentionDays: res.logRetentionDays ?? 30,
-          awsRegion: res.awsRegion ?? '',
-          awsBedrockModelId: res.awsBedrockModelId ?? ''
+          awsRegion: res.awsRegion || 'us-east-1',
+          awsBedrockModelId: res.awsBedrockModelId || 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
         })
         setClaudeApiKeyConfigured(res.claudeApiKeyConfigured ?? false)
       }
@@ -85,6 +87,16 @@ export default function GeneralTab() {
       ? { success: true, message: 'AWS SSO login successful.' }
       : { success: false, message: res.error ?? 'AWS SSO login failed.' }
     )
+  }
+
+  const handleClearCache = async () => {
+    setClearingCache(true)
+    const res = await ipcSettingsClearAiCache()
+    setClearingCache(false)
+    if (res.success) {
+      setCacheCleared(true)
+      setTimeout(() => setCacheCleared(false), 2500)
+    }
   }
 
   const f = (field: keyof AppSettings, val: string | number) =>
@@ -247,7 +259,7 @@ export default function GeneralTab() {
               <input
                 value={settings.awsBedrockModelId}
                 onChange={e => f('awsBedrockModelId', e.target.value)}
-                placeholder="anthropic.claude-sonnet-4-5-v1:0"
+                placeholder="us.anthropic.claude-sonnet-4-5-20250929-v1:0"
               />
               <p style={{ fontSize: 11, color: 'var(--text-500)', marginTop: 4 }}>
                 Must be a Claude model available in your Bedrock account.
@@ -270,6 +282,20 @@ export default function GeneralTab() {
                 </span>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* ── AI Cache ──────────────────────────────────────────────── */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>AI Cache</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-400)', marginBottom: 12 }}>
+            App catalog recommendations are cached locally. Clear this if switching AI connections or after updating your Bedrock model.
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button type="button" className="btn-secondary" onClick={handleClearCache} disabled={clearingCache} style={{ flexShrink: 0 }}>
+              {clearingCache ? 'Clearing...' : 'Clear AI Cache'}
+            </button>
+            {cacheCleared && <span style={{ fontSize: 12, color: 'var(--success, #4ade80)' }}>Cache cleared — reload App Catalog to refresh.</span>}
           </div>
         </div>
 

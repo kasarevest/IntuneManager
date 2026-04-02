@@ -88,6 +88,9 @@ export const ipcSettingsGet = (): Promise<SettingsGetRes> =>
 export const ipcSettingsSave = (req: SaveSettingsReq): Promise<{ success: boolean; error?: string }> =>
   api.invoke('ipc:settings:save', req) as Promise<{ success: boolean; error?: string }>
 
+export const ipcSettingsClearAiCache = (): Promise<{ success: boolean; error?: string }> =>
+  api.invoke('ipc:settings:clear-ai-cache') as Promise<{ success: boolean; error?: string }>
+
 // --- PS Bridge / Tenant ---
 export const ipcPsGetTenantConfig = (): Promise<AuthStatusRes> =>
   api.invoke('ipc:ps:get-tenant-config') as Promise<AuthStatusRes>

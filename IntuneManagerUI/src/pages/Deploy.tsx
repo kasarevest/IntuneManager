@@ -433,7 +433,7 @@ export default function Deploy() {
                 </span>
               </div>
 
-              <LogPanel logs={job.logs} height={220} onClear={() => setJob(prev => prev ? { ...prev, logs: [] } : prev)} />
+              <LogPanel logs={job.logs} height={360} onClear={() => setJob(prev => prev ? { ...prev, logs: [] } : prev)} />
 
               {(isDone || isError) && (
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>

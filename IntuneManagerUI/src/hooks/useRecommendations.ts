@@ -60,10 +60,12 @@ export function useRecommendations(): RecommendationsState {
       'ipc:ai:recommendations-updated',
       (data: unknown) => {
         if (!mountedRef.current) return
-        const payload = data as { recommendations: AppRecommendation[] }
+        const payload = data as { recommendations: AppRecommendation[] | null; error?: string }
         if (Array.isArray(payload?.recommendations) && payload.recommendations.length > 0) {
           sessionCache = payload.recommendations
           setRecommendations(payload.recommendations)
+        } else if (payload?.error) {
+          setError(payload.error)
         }
         setRefreshing(false)
       }
