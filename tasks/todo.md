@@ -1766,3 +1766,126 @@ Changes that could break existing functionality:
 
 ---
 
+# Task: Dashboard v2 — Enhanced Diagnostics & Visualizations (2026-04-02)
+
+## Pre-Flight Plan
+
+### Spec
+`docs/specs/feature-spec-dashboard-v2.md`
+
+### Objective
+Extend the Dashboard with 6 new data panels using Recharts (SVG-based charting library):
+1. OS Version Distribution (horizontal bar chart — from existing device data)
+2. Enrollment Type Donut (from existing device data + 2 new $select fields)
+3. Security / Defender Posture (extend Get-IntuneDevices.ps1 with windowsProtectionState fields)
+4. App Install Health table (new Get-AppInstallStats.ps1 — per-app success/failure rates)
+5. Windows Update Compliance (new Get-UpdateStates.ps1 — beta endpoint)
+6. UEA Performance Scores (new Get-UEAScores.ps1 — requires UserExperienceAnalytics.Read.All)
+7. Autopilot Enrollment Events line chart (new Get-AutopilotEvents.ps1 — requires DeviceManagementServiceConfig.ReadWrite.All)
+
+Panels requiring new permissions render a "Permission required" banner instead of an error on 403.
+
+### Lessons Consulted
+- **Lesson 001:** Enhanced Workflow mandatory. Plan/peer-review/post-flight. No exceptions.
+- **Lesson 003 (PS 5.1):** UTF-8 BOM, no ternary, null-guard all property accesses.
+- **Lesson 005 (IPC):** types/ipc.ts → lib/ipc.ts → electron/ipc/ handler sequence.
+- **Lesson 006 (PS JSON):** Validate $select field additions don't break existing Graph queries.
+
+### Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Recharts bundle size causes slow Electron load | Low | Medium | SVG-based, ~180 KB gzip; acceptable for desktop app |
+| Get-AppInstallStats.ps1 runs N Graph calls (one per app) — slow with 100+ apps | High | Medium | Cap at 50 apps (sort by most recently published); show "showing top 50" label |
+| UEA/Autopilot endpoints return 403 — user sees confusing error | Certain (if no permission) | High | permissionError flag pattern: render instructional banner, not error card |
+| windowsUpdateStates beta endpoint deprecated | Low | Medium | Wrapped in try/catch; panel shows graceful "unavailable" state |
+| Recharts ResponsiveContainer requires explicit parent height | Medium | Low | All chart containers given explicit height in inline styles |
+| Adding deviceEnrollmentType to Get-IntuneDevices.ps1 $select breaks existing Graph call | Low | High | Test additive $select change against live tenant before committing |
+
+### Dependency Graph
+
+```
+Phase 1 (no new PS, no new permissions)
+  Dashboard.tsx: derive osDistribution + enrollmentTypes from existing devices data
+  recharts npm install
+  OsDistributionChart + EnrollmentDonut components
+
+Phase 2 (extend existing PS, no new permissions)
+  Get-IntuneDevices.ps1: add deviceEnrollmentType, joinType to $select
+  Get-IntuneDevices.ps1: extract Defender fields from windowsProtectionState
+  DeviceItem type: +enrollmentType, +joinType, +malwareProtectionEnabled, +realTimeProtectionEnabled,
+                   +signatureUpdateOverdue, +quickScanOverdue, +rebootRequired
+  SecurityPosturePanel component
+
+Phase 3 (new PS scripts, no new permissions)
+  Get-AppInstallStats.ps1 + Get-UpdateStates.ps1
+  IPC: AppInstallStatsRes + UpdateStatesRes types + wrappers + handlers
+  AppInstallHealthTable + UpdateComplianceChart components
+
+Phase 4 (new PS scripts, new permission: UserExperienceAnalytics.Read.All)
+  Get-UEAScores.ps1
+  IPC: UEAScoresRes type + wrapper + handler
+  UEAScoreCards component + permissionError banner
+
+Phase 5 (new PS scripts, new permission: DeviceManagementServiceConfig.ReadWrite.All)
+  Get-AutopilotEvents.ps1
+  IPC: AutopilotEventsRes type + wrapper + handler
+  EnrollmentTrendChart component + permissionError banner
+```
+
+### Checklist
+
+**Phase 1 — OS Distribution + Enrollment Donut**
+- [x] `npm install recharts` in IntuneManagerUI/
+- [x] `Dashboard.tsx` — derive `osDistribution` from existing devices (parseOsBucket helper)
+- [x] `OsDistributionChart` component — Recharts `<BarChart layout="vertical">`
+- [x] `EnrollmentDonut` component — Recharts `<PieChart><Pie innerRadius...>`
+- [x] `npx tsc --noEmit` — 0 errors
+
+**Phase 2 — Security / Defender Posture**
+- [x] `Get-IntuneDevices.ps1` — add `deviceEnrollmentType,joinType` to `$select`
+- [x] `Get-IntuneDevices.ps1` — extract 7 Defender fields from `windowsProtectionState` block
+- [x] `src/types/ipc.ts` — add 7 fields to `DeviceItem`
+- [x] `SecurityPosturePanel` component — 4 stat tiles + device table
+- [x] Parse-check Get-IntuneDevices.ps1 — PASS
+- [x] `npx tsc --noEmit` — 0 errors
+
+**Phase 3 — App Install Health + Update Compliance**
+- [x] `Get-AppInstallStats.ps1` — fetch win32LobApp list; query installSummary per app (cap 50)
+- [x] `Get-UpdateStates.ps1` — beta endpoint windowsUpdateStates; return states + summary
+- [x] `src/types/ipc.ts` — AppInstallStat, AppInstallStatsRes, UpdateStateSummary, UpdateStateDevice, UpdateStatesRes
+- [x] `src/lib/ipc.ts` — ipcPsGetAppInstallStats, ipcPsGetUpdateStates wrappers
+- [x] `electron/ipc/ps-bridge.ts` — 2 new handlers
+- [x] `AppInstallHealthTable` component — sortable table with color-coded Success% column
+- [x] `UpdateComplianceChart` component — stacked BarChart per featureUpdateVersion
+- [x] Parse-check both PS scripts — PASS
+- [x] `npx tsc --noEmit` — 0 errors
+
+**Phase 4 — UEA Scores (requires UserExperienceAnalytics.Read.All)**
+- [x] `Get-UEAScores.ps1` — overview + deviceScores + appHealthApplicationPerformance
+- [x] `src/types/ipc.ts` — UEAOverview, UEAAppHealth, UEAScoresRes
+- [x] `src/lib/ipc.ts` — ipcPsGetUEAScores wrapper
+- [x] `electron/ipc/ps-bridge.ts` — handler
+- [x] `UEAScoreCards` component — 4 score ring SVGs + app health table
+- [x] Permission banner: renders when `permissionError: true`
+- [x] Parse-check — PASS
+- [x] `npx tsc --noEmit` — 0 errors
+
+**Phase 5 — Autopilot Events (requires DeviceManagementServiceConfig.ReadWrite.All)**
+- [x] `Get-AutopilotEvents.ps1` — autopilotEvents + daily bucketing
+- [x] `src/types/ipc.ts` — AutopilotEvent, AutopilotEventsRes
+- [x] `src/lib/ipc.ts` — ipcPsGetAutopilotEvents wrapper
+- [x] `electron/ipc/ps-bridge.ts` — handler
+- [x] `EnrollmentTrendChart` component — LineChart last 30 days success/failure series
+- [x] Permission banner
+- [x] Parse-check — PASS
+- [x] `npx tsc --noEmit` — 0 errors
+
+**Quality Gate**
+- [ ] Peer review of all new PS scripts and Dashboard.tsx changes
+- [ ] Fix all BLOCKING and MAJOR issues
+- [ ] Post-flight review written
+- [ ] `tasks/lessons.md` updated if new patterns captured
+
+---
+

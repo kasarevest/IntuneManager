@@ -11,7 +11,11 @@ import type {
   ListPackagesRes,
   GetDevicesRes,
   TriggerDeviceActionRes,
-  AwsSsoLoginRes
+  AwsSsoLoginRes,
+  AppInstallStatsRes,
+  UpdateStatesRes,
+  UEAScoresRes,
+  AutopilotEventsRes
 } from '../types/ipc'
 import type { LogEntry } from '../types/app'
 
@@ -136,6 +140,19 @@ export const ipcPsTriggerDriverUpdate = (deviceId: string): Promise<TriggerDevic
 
 export const ipcPsDownloadDiagnostics = (deviceId: string, deviceName: string): Promise<TriggerDeviceActionRes> =>
   api.invoke('ipc:ps:download-diagnostics', { deviceId, deviceName }) as Promise<TriggerDeviceActionRes>
+
+// --- Dashboard v2 data sources ---
+export const ipcPsGetAppInstallStats = (): Promise<AppInstallStatsRes> =>
+  api.invoke('ipc:ps:get-app-install-stats') as Promise<AppInstallStatsRes>
+
+export const ipcPsGetUpdateStates = (): Promise<UpdateStatesRes> =>
+  api.invoke('ipc:ps:get-update-states') as Promise<UpdateStatesRes>
+
+export const ipcPsGetUEAScores = (): Promise<UEAScoresRes> =>
+  api.invoke('ipc:ps:get-uea-scores') as Promise<UEAScoresRes>
+
+export const ipcPsGetAutopilotEvents = (): Promise<AutopilotEventsRes> =>
+  api.invoke('ipc:ps:get-autopilot-events') as Promise<AutopilotEventsRes>
 
 // --- AWS ---
 export const ipcAwsSsoLogin = (profile?: string): Promise<AwsSsoLoginRes> =>

@@ -92,6 +92,91 @@ export interface DeviceItem {
   driverUpdateStatus: 'updated' | 'needsUpdate' | 'unknown'
   hasDiagnostics: boolean
   needsAttention: boolean
+  // Dashboard v2 additions
+  deviceEnrollmentType: string
+  joinType: string
+  malwareProtectionEnabled: boolean
+  realTimeProtectionEnabled: boolean
+  signatureUpdateOverdue: boolean
+  quickScanOverdue: boolean
+  rebootRequired: boolean
+}
+
+// App install health
+export interface AppInstallStat {
+  id: string
+  displayName: string
+  installed: number
+  failed: number
+  pending: number
+  notApplicable: number
+  successPercent: number
+}
+export interface AppInstallStatsRes {
+  success: boolean
+  apps: AppInstallStat[]
+  truncated?: boolean
+  permissionError?: boolean
+  error?: string
+}
+
+// Windows Update states
+export interface UpdateStateSummary {
+  notStarted: number
+  pending: number
+  inProgress: number
+  completed: number
+  failed: number
+}
+export interface UpdateStateDevice {
+  deviceId: string
+  deviceName: string
+  osVersion: string
+  featureUpdateVersion: string
+  status: string
+}
+export interface UpdateStatesRes {
+  success: boolean
+  summary: UpdateStateSummary
+  states: UpdateStateDevice[]
+  permissionError?: boolean
+  error?: string
+}
+
+// UEA scores
+export interface UEAOverview {
+  startupScore: number
+  appReliabilityScore: number
+  batteryHealthScore: number
+  workFromAnywhereScore: number
+}
+export interface UEAAppHealth {
+  appName: string
+  appPublisher: string
+  crashCount: number
+  hangCount: number
+  crashRate: number
+}
+export interface UEAScoresRes {
+  success: boolean
+  overview: UEAOverview | null
+  appHealth: UEAAppHealth[]
+  permissionError?: boolean
+  error?: string
+}
+
+// Autopilot events
+export interface AutopilotEvent {
+  id: string
+  deviceRegisteredDateTime: string
+  enrollmentState: string
+  enrollmentFailureDetails: string | null
+}
+export interface AutopilotEventsRes {
+  success: boolean
+  events: AutopilotEvent[]
+  permissionError?: boolean
+  error?: string
 }
 
 export interface GetDevicesRes {
