@@ -30,6 +30,7 @@ win:
     - target: nsis
       arch: [x64]
   requestedExecutionLevel: asInvoker
+  sign: false
 
 nsis:
   oneClick: false
