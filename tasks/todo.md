@@ -1514,3 +1514,234 @@ src/settings/GeneralTab.tsx           — full Claude AI section redesign with d
 
 ---
 
+# Task: Remote Agent — PS Terminal + Remote Desktop (Phase 1 + 2)
+
+## Pre-Flight Plan
+
+### Spec
+`docs/specs/feature-spec-remote-agent.md`
+
+### Objective
+Build a two-phase remote management system:
+- **Phase 1:** IntuneAgent Windows service + Relay Server + PS terminal in IntuneManager (xterm.js)
+- **Phase 2:** VNC-based remote desktop (TightVNC + noVNC) layered on top of Phase 1 infrastructure
+
+The agent is deployed to managed devices as a Win32 Intune package using IntuneManager's own packaging pipeline.
+
+### Lessons Consulted
+- **Lesson 001:** Enhanced Workflow mandatory. Plan/peer-review/post-flight. No exceptions.
+- **Lesson 003 (PS 5.1):** Install scripts must be PS 5.1 compatible. UTF-8 BOM required. No ternary syntax.
+- **Lesson 005 (IPC):** IPC race conditions — use refs for cross-event data handoff. types → lib/ipc → handler sequence.
+- **Lesson 006 (PS JSON):** Don't pass complex JSON as CLI args. Use temp files or named pipes.
+
+### Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Corporate proxy blocks outbound WSS on non-443 ports | High | High | Relay server listens on port 443; Azure Container Apps handles TLS termination |
+| Agent TLS cert pinning fails after relay cert renewal | Medium | High | Pin intermediate CA fingerprint, not leaf cert; document renewal procedure |
+| TightVNC bundled binary flagged by AV on managed devices | Medium | High | Test against Defender before deployment; consider signing the binary |
+| PS runspace leaks if admin closes terminal without Kill | Medium | Medium | Agent enforces max 5 concurrent sessions; orphaned runspaces cleaned up after 30 min idle |
+| ECDH session key derivation differs between C# and Node.js | High | High | Write an integration test that derives a shared secret on both sides and verifies decryption |
+| Device token generation in PS 5.1 (HMAC-SHA256) | Medium | Medium | Use `System.Security.Cryptography.HMACSHA256` class, available in PS 5.1 |
+| noVNC performance in Electron WebView | Medium | Medium | Use canvas-based noVNC (no WebGL required); test at 1080p before Phase 2 commit |
+| `relay_secret` exposed in PACKAGE_SETTINGS.md | Certain | High | Document that PACKAGE_SETTINGS.md must NOT be committed to public repos; relay secret is a deployment credential |
+| Agent installed on device with no relay configured | Low | Low | Agent logs error to Windows Event Log and stops reconnecting after 3 failures |
+| IntuneAgent PS runspace runs as SYSTEM — privilege escalation risk | Medium | High | Runspace executes commands as-is; restrict access to admin+superadmin roles only in relay auth |
+
+### Dependency Graph
+
+```
+Phase 0 — Infrastructure
+  RelayServer (Node.js/TS project scaffold + auth + router + registry)
+    ↓
+  RelayServer deployed (Docker / Azure Container Apps)
+    ↓
+  Integration test: relay routes messages between two WS clients
+
+Phase 1A — Agent Core
+  IntuneAgent.csproj (.NET 8 Windows Service scaffold)
+    → RelayConnection.cs (WS client + reconnect + cert pinning)
+    → AgentService.cs (host entry point)
+    → RegistryHelper.cs (DPAPI token store)
+    → AgentConfig.cs + appsettings.json
+
+Phase 1B — PS Shell
+  ShellSession.cs (PS runspace + output streaming)
+    ↓
+  Integration test: agent connects to relay, admin sends shell:start, verifies output
+
+Phase 1C — IntuneManager PS Terminal UI
+  electron/relay/relay-client.ts (admin WS client)
+    → electron/ipc/agent.ts (IPC handlers)
+    → src/types/agent.ts + src/types/ipc.ts (types)
+    → src/lib/ipc.ts (wrappers)
+    → src/pages/RemoteTerminal.tsx (xterm.js)
+    → src/pages/Devices.tsx (Connect PS button)
+    → src/App.tsx (/remote-terminal route)
+
+Phase 1D — Settings + Agent Packaging
+  Settings: relayServerUrl + relaySecret fields
+    → Build Agent Package button
+    → Source/IntuneAgent/ PS scripts (Install/Detect/Uninstall)
+    → PACKAGE_SETTINGS.md
+    → Output/Install-IntuneAgent.intunewin
+
+Phase 2A — VNC Infrastructure
+  SessionKeyExchange.cs (ECDH P-256 + AES-256-GCM in C#)
+    → Integration test: key exchange + encrypt/decrypt roundtrip between C# and Node.js
+
+Phase 2B — Agent VNC
+  VncSession.cs (TightVNC lifecycle + RFB proxy + encryption)
+    ↓
+  Integration test: agent starts VNC, frames arrive at admin relay client
+
+Phase 2C — IntuneManager Remote Desktop UI
+  electron/ipc/agent.ts: vnc-start/stop/input handlers + ECDH on Node.js side
+    → src/pages/RemoteDesktop.tsx (noVNC canvas)
+    → src/pages/Devices.tsx (Remote Desktop button)
+    → src/App.tsx (/remote-desktop route)
+```
+
+---
+
+## Phase 0 — Relay Server
+
+### Checklist
+
+- [ ] `RelayServer/` project scaffold: `npm init`, `tsconfig.json`, `package.json`
+- [ ] `src/types.ts` — all message type definitions (device↔relay↔admin protocol)
+- [ ] `src/auth.ts` — HMAC-SHA256 device token verification; JWT admin token issue/verify
+- [ ] `src/registry.ts` — in-memory device connection store (Map<deviceId, WebSocket>)
+- [ ] `src/router.ts` — message routing: admin→device, device→admin; error on unknown deviceId
+- [ ] `src/api.ts` — HTTP routes: GET /health, POST /api/auth/admin-token, GET /api/devices, DELETE /api/devices/:id
+- [ ] `src/index.ts` — Express + ws server; /ws/device and /ws/admin endpoints; TLS config
+- [ ] Unit tests: auth.ts (token verify), router.ts (message routing)
+- [ ] Integration test: two WS clients (mock device + mock admin), send message, verify delivery
+- [ ] `Dockerfile` + `docker-compose.yml`
+- [ ] Local test: `docker-compose up` → connect two wscat clients → verify routing works
+- [ ] `deploy/azure-container-app.yml` (deployment config)
+- [ ] Peer review of relay server before deployment
+
+---
+
+## Phase 1A — Agent Core
+
+### Checklist
+
+- [ ] `IntuneAgent/IntuneAgent.csproj` — .NET 8 Worker Service template, self-contained Windows x64
+- [ ] `AgentConfig.cs` — configuration model (RelayUrl, CertFingerprint, DeviceId)
+- [ ] `RegistryHelper.cs` — DPAPI encrypt/decrypt DeviceToken; read DeviceId from Intune registry
+- [ ] `RelayConnection.cs` — ClientWebSocket with cert pinning; reconnect with exponential backoff; message send/receive loop; message dispatch to registered handlers
+- [ ] `AgentService.cs` — IHostedService; wires RelayConnection + handlers; lifecycle management
+- [ ] `Program.cs` — host builder with WindowsService support, logging to Windows Event Log
+- [ ] Unit test: RegistryHelper DPAPI roundtrip (mock registry)
+- [ ] Unit test: RelayConnection reconnect backoff timing
+- [ ] Manual test: service starts, connects to local relay, sends device:register, relay logs registration
+
+---
+
+## Phase 1B — PS Shell
+
+### Checklist
+
+- [ ] `ShellSession.cs` — PowerShell runspace create/dispose; async BeginInvoke with output callbacks; stdout + stderr streaming; max session enforcement; idle timeout cleanup
+- [ ] Unit test: ShellSession executes `"Get-Date"`, output arrives via callback
+- [ ] Integration test: agent + relay + mock admin client — send shell:start → receive shell:output lines → send shell:kill → receive shell:exit
+- [ ] Verify PS runspace runs as SYSTEM service account on test VM
+- [ ] Verify output encoding is UTF-8 end-to-end
+
+---
+
+## Phase 1C — IntuneManager PS Terminal
+
+### Checklist
+
+- [ ] `electron/relay/relay-client.ts` — WebSocket client; connect/disconnect; send/receive; emit Electron events on incoming messages; auto-reconnect
+- [ ] `src/types/agent.ts` — AgentSession, RelayDevice, ShellOutputEvent types
+- [ ] `src/types/ipc.ts` — AgentConnectRes, ShellStartReq/Res, ShellInputReq, ShellKillReq types added
+- [ ] `src/lib/ipc.ts` — ipcAgentConnectRelay, ipcAgentShellStart, ipcAgentShellInput, ipcAgentShellKill, onAgentShellOutput, onAgentShellExit, onAgentDeviceOnline, onAgentDeviceOffline wrappers
+- [ ] `electron/ipc/agent.ts` — register all IPC handlers; relay-client integration; admin JWT refresh logic
+- [ ] `electron/main.ts` — import and call registerAgentHandlers
+- [ ] `npm install @xterm/xterm @xterm/addon-fit` (renderer dependency)
+- [ ] `src/pages/RemoteTerminal.tsx` — xterm.js terminal; topbar (device name, status, Kill, Back); mount → shell:start; user input → shell:input; agent:shell-output → xterm write; agent:shell-exit → show exit code
+- [ ] `src/pages/Devices.tsx` — add relay online status indicator in topbar; add Connect PS button per row (disabled if device offline in relay); add Remote Desktop button placeholder (disabled, "Phase 2")
+- [ ] `src/App.tsx` — add /remote-terminal route
+- [ ] `npx tsc --noEmit` — 0 errors
+- [ ] End-to-end test: IntuneManager → relay → agent on test VM → terminal shows PS prompt → run `Get-Process` → output renders in xterm.js
+
+---
+
+## Phase 1D — Settings + Agent Packaging
+
+### Checklist
+
+- [ ] `src/types/app.ts` — add relayServerUrl, relaySecret to AppSettings
+- [ ] `src/types/ipc.ts` — add relayServerUrl, relaySecret to SaveSettingsReq; add BuildAgentPackageRes
+- [ ] `src/lib/ipc.ts` — ipcAgentBuildPackage wrapper
+- [ ] `electron/ipc/settings.ts` — read/write relay_server_url, relay_secret_encrypted; add ipc:agent:build-package handler
+- [ ] `src/settings/GeneralTab.tsx` — Remote Agent card: relay URL field, relay secret field (masked), Build Agent Package button, build status indicator
+- [ ] `Source/IntuneAgent/Install-IntuneAgent.ps1` — full v1.0 (see spec section 5)
+- [ ] `Source/IntuneAgent/Detect-IntuneAgent.ps1`
+- [ ] `Source/IntuneAgent/Uninstall-IntuneAgent.ps1`
+- [ ] `Source/IntuneAgent/PACKAGE_SETTINGS.md`
+- [ ] Parse-check all 3 PS scripts — all PASS
+- [ ] Peer review of install scripts before packaging
+- [ ] Build `.intunewin`: `IntuneWinAppUtil.exe -c Source\IntuneAgent -s Install-IntuneAgent.ps1 -o Output`
+- [ ] Deploy via IntuneManager to test device; verify agent installs, starts, connects to relay
+- [ ] `npx tsc --noEmit` — 0 errors
+- [ ] Post-flight review
+
+---
+
+## Phase 2A — VNC Key Exchange Infrastructure
+
+### Checklist
+
+- [ ] `SessionKeyExchange.cs` — ECDH P-256 key pair generation; export public key (uncompressed, base64); import remote public key; derive shared secret; HKDF → AES-256-GCM key
+- [ ] Equivalent key exchange in `electron/relay/relay-client.ts` (Node.js `crypto.createECDH('prime256v1')`)
+- [ ] Integration test: C# derives shared secret from Node.js public key; Node.js derives same from C# public key; encrypt/decrypt roundtrip verifies both sides agree
+
+---
+
+## Phase 2B — Agent VNC
+
+### Checklist
+
+- [ ] Bundle TightVNC Server binaries in `IntuneAgent/Assets/TightVNC/` (tvnserver.exe + config)
+- [ ] `VncSession.cs` — TightVNC process launch on localhost:5900; loopback-only config; one-time session password; connect local TCP socket; read RFB frame loop; AES-256-GCM encrypt chunks; send vnc:frame; forward vnc:input events decoded and injected as RFB; tvnserver.exe cleanup on stop
+- [ ] Unit test: VncSession encrypts a dummy byte array; decrypt verifies roundtrip
+- [ ] Integration test: agent + relay + mock admin — vnc:start → vnc:ready → receive encrypted frames → decrypt → verify non-empty RFB data
+
+---
+
+## Phase 2C — IntuneManager Remote Desktop UI
+
+### Checklist
+
+- [ ] `npm install novnc` (or bundle local copy in `electron/novnc/`)
+- [ ] `electron/ipc/agent.ts` — add vnc-start/stop/input IPC handlers; ECDH key exchange on Node.js side; decrypt vnc:frame before emitting to renderer
+- [ ] `src/types/ipc.ts` — VncStartReq/Res, VncInputReq, VncFrameEvent types
+- [ ] `src/lib/ipc.ts` — ipcAgentVncStart, ipcAgentVncStop, ipcAgentVncInput, onAgentVncReady, onAgentVncFrame wrappers
+- [ ] `src/pages/RemoteDesktop.tsx` — noVNC canvas component; topbar (device name, resolution, latency, Disconnect, Back); mount → vnc:start + key exchange; agent:vnc-ready → set canvas size; agent:vnc-frame → feed to noVNC; mouse/keyboard events → ipcAgentVncInput
+- [ ] `src/pages/Devices.tsx` — enable Remote Desktop button (was placeholder in Phase 1C)
+- [ ] `src/App.tsx` — add /remote-desktop route
+- [ ] `npx tsc --noEmit` — 0 errors
+- [ ] End-to-end test: IntuneManager → relay → agent on test VM → remote desktop renders device screen → mouse click propagates
+
+---
+
+## Side-Effect Audit
+
+Changes that could break existing functionality:
+
+| Change | Potential downstream breakage |
+|--------|------------------------------|
+| Add relayServerUrl + relaySecret to AppSettings | None — additive fields with empty defaults |
+| Add new IPC handlers in agent.ts | None — new channels don't conflict with existing |
+| Modify Devices.tsx to add Connect PS / Remote Desktop buttons | Layout change — verify existing action buttons (Sync Updates, Sync Drivers, Request Logs) still render correctly at all table widths |
+| Add /remote-terminal and /remote-desktop routes to App.tsx | None — new routes don't conflict |
+| Bundle TightVNC in agent package | Agent package size increases; verify Intune upload doesn't timeout for larger package |
+
+---
+
