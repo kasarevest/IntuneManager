@@ -27,9 +27,15 @@ extraResources:
 
 win:
   target:
-    - target: dir
+    - target: nsis
       arch: [x64]
   requestedExecutionLevel: asInvoker
   sign: false
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
 
 npmRebuild: true
