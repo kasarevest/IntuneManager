@@ -2,7 +2,7 @@
   "name": "intune-manager-ui",
   "version": "1.0.0",
   "description": "IntuneManager — AI-powered Intune Win32 app deployment tool",
-  "main": "dist-electron/main.js",
+  "main": "builds/dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.node.json && tsc && vite build",

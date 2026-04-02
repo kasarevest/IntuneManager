@@ -5,11 +5,11 @@ artifactName: "${productName}-Setup-${version}.exe"
 
 directories:
   buildResources: resources
-  output: dist-installer
+  output: builds/dist-installer
 
 files:
-  - "dist/**/*"
-  - "dist-electron/**/*"
+  - "builds/dist/**/*"
+  - "builds/dist-electron/**/*"
   - "electron/ps-scripts/**/*"
   - "!node_modules/.cache"
 
