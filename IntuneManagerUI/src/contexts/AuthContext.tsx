@@ -9,7 +9,7 @@ interface AuthState {
 }
 
 interface AuthContextValue extends AuthState {
-  login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>
+  login: (username: string, password: string) => Promise<{ success: boolean; error?: string; user?: User }>
   logout: () => Promise<void>
   refreshSession: () => Promise<void>
 }
@@ -50,7 +50,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (res.success && res.sessionToken) {
       sessionStorage.setItem(SESSION_KEY, res.sessionToken)
       setState({ user: res.user ?? null, sessionToken: res.sessionToken, isLoading: false })
-      return { success: true }
+      return { success: true, user: res.user ?? undefined }
     }
     return { success: false, error: res.error ?? 'Login failed' }
   }

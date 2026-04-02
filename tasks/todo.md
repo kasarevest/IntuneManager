@@ -2009,3 +2009,84 @@ Post-fix verdict: **PASS** (0 blocking, 0 actionable major)
 
 ---
 
+## New User Setup + Stale .js File Fix (2026-04-02)
+
+### Pre-Flight Plan
+
+**Objective:** When an admin creates a new user, that user should be required to change their password and optionally connect their tenant on first login, before reaching the dashboard.
+
+**Lessons Consulted:**
+- Lesson 001: Enhanced Workflow mandatory — Plan Mode, peer review, post-flight docs
+- Lesson 009: Cache-first IPC pattern, win.isDestroyed() guard
+
+**Risk Assessment:**
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Stale compiled .js files shadow .tsx source | **Confirmed bug** | Critical | Delete all .js files; add `noEmit: true` to tsconfig |
+| Redirect loop between /login and /new-user-setup | Low | High | Guard checks `location.pathname !== '/new-user-setup'` |
+| refreshSession() failure after password change logs user out | Low | Medium | RequireAuth redirects to /login — acceptable fallback |
+| Future `tsc` runs re-emit .js files | Medium | High | Fix both tsconfig.json and build script |
+
+### Implementation Checklist
+
+- [x] Root cause investigation — stale `.js` files in `src/` taking priority over `.tsx` source
+- [x] Add `"noEmit": true` to `tsconfig.json`
+- [x] Fix `package.json` build script: `tsc --noEmit` (was bare `tsc`)
+- [x] Delete all 25 stale `.js` files from `src/`
+- [x] Verify `src/contexts/AuthContext.tsx` — `login()` returns `user` object ✅ (done prev session)
+- [x] Verify `src/pages/Login.tsx` — redirects to `/new-user-setup` on `mustChangePassword` ✅ (done prev session)
+- [x] `src/App.tsx` — added `useLocation`, RequireAuth guard, `/new-user-setup` route
+- [x] `src/pages/NewUserSetup.tsx` — created: password change form + required tenant connect
+- [x] `npx tsc --noEmit` → 0 errors
+- [x] Peer review — no blocking issues
+- [x] Post-flight review written
+- [x] Lesson 010 written
+
+### Post-Flight Review
+
+**What worked:**
+- Entire new user setup feature was already correctly implemented in `.tsx` files; only needed the `.js` shadow files removed
+- `tsconfig.json` + `package.json` fix permanently prevents re-emission
+- Peer review found no blocking issues — only low-impact edge case warnings
+
+**Root cause summary:**
+The build script ran `tsc` (no `--noEmit`, no `outDir`), causing TypeScript to emit compiled `.js` files directly into `src/`. Vite's default extension resolution order prefers `.js` before `.tsx`, so ALL TypeScript source changes across every session were silently ignored — the app was running stale code throughout.
+
+**Peer review warnings (non-blocking):**
+- If `refreshSession()` fails after password change (e.g., token expired during the operation), `user` is set to null. `pwDone = true` still fires, but "Continue to Dashboard" will redirect to `/login` via RequireAuth — acceptable fallback.
+- Race condition: session expires in the ~1s between `ipcAuthChangePassword` success and `refreshSession()` call. 8-hour window makes this negligible.
+
+### Side-Effect Audit
+
+| Change | Potential downstream impact | Status |
+|--------|----------------------------|--------|
+| `tsconfig.json` noEmit: true | Prevents any future `tsc` from writing JS files. Type-checks still work. Vite is unaffected (uses esbuild). | ✅ Safe |
+| package.json build script fix | Production builds still type-check then bundle via Vite. No functional change. | ✅ Safe |
+| 25 `.js` files deleted | Vite now resolves all imports to `.tsx`/`.ts` source. All TypeScript changes (Dashboard v2, caching, new user setup) now actually run. | ✅ Intended |
+
+### Workflow Compliance
+- ✅ Lessons consulted at session start
+- ✅ Plan Mode entered — plan written and approved before implementation
+- ✅ `npx tsc --noEmit` passed after all changes
+- ✅ Peer review subagent run — no blocking issues
+- ✅ Post-flight review written
+- ✅ Lesson 010 written
+
+### Amendment — Tenant Connect Made Required (2026-04-02)
+
+**Change:** After user testing, tenant connect in the setup flow was changed from optional to required.
+
+**What changed in `src/pages/NewUserSetup.tsx`:**
+- Added local `tenantConnected` state (starts `false`, independent of global `tenant.isConnected` — prevents inheriting a prior admin's connection)
+- `handleConnect` sets `tenantConnected(true)` on success
+- Removed "Optional" badge from Step 2 header
+- "Continue to Dashboard" button now requires both `pwDone && tenantConnected`
+- Step 2 description updated to remove "skip this" wording
+
+**Why local state:** The global `useTenant().tenant.isConnected` reflects whatever tenant the admin last connected. A new user should always be prompted to connect their own account, never see Step 2 as pre-completed.
+
+**Status:** ✅ Verified working end-to-end. `npx tsc --noEmit` → 0 errors.
+
+---
+
