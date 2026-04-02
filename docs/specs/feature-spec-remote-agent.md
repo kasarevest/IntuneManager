@@ -37,6 +37,20 @@ Both capabilities work regardless of whether the admin and device are on the sam
 
 ## 2. Architecture
 
+### Infrastructure Choice: Azure Web PubSub + Azure Functions
+
+The relay layer is implemented using two fully managed Azure services. No server code is deployed, maintained, or operated:
+
+| Service | Role | Cost estimate |
+|---------|------|--------------|
+| **Azure Web PubSub** (Standard_S1) | Managed WebSocket hub — holds all device and admin connections, routes messages | ~$50/month (1,000 concurrent units) |
+| **Azure Functions** (Consumption plan) | Serverless hub server — issues access tokens, validates auth, routes messages via Web PubSub REST API | ~$0–2/month (first 1M executions free) |
+| **Azure Table Storage** | Session registry — maps device IDs and admin usernames to Web PubSub connection IDs | ~$0/month (pennies for this volume) |
+
+This eliminates all container operations, TLS certificate management, and relay uptime responsibility. Microsoft operates the WebSocket infrastructure.
+
+### Full Architecture Diagram
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  IntuneManager App (Electron)                                │
@@ -46,50 +60,90 @@ Both capabilities work regardless of whether the admin and device are on the sam
 │    └── [Remote Desktop] button per device                    │
 │                                                              │
 │  /remote-terminal?deviceId=                                  │
-│    └── xterm.js terminal component                           │
+│    └── xterm.js terminal                                     │
 │                                                              │
 │  /remote-desktop?deviceId=                                   │
-│    └── noVNC WebView component                               │
+│    └── noVNC canvas                                          │
 │                                                              │
 │  electron/relay/relay-client.ts                              │
-│    └── WebSocket client → Relay Server                       │
-│                                                              │
-│  electron/ipc/agent.ts                                       │
-│    └── IPC handlers for terminal + desktop sessions          │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ WSS (TLS 1.3)
-                    ┌──────────▼──────────┐
-                    │   Relay Server       │
-                    │   (Node.js/TS)       │
-                    │                     │
-                    │  /ws/admin           │  ← Admin connects
-                    │  /ws/device          │  ← Agent connects
-                    │  /api/token          │  ← Token issuance
-                    │                     │
-                    │  In-memory device    │
-                    │  registry            │
-                    │  Message router      │
-                    └──────────┬──────────┘
-                               │ WSS (TLS 1.3)
-┌──────────────────────────────▼───────────────────────────────┐
-│  Managed Device (Windows 10/11)                              │
-│                                                              │
-│  IntuneAgent Windows Service                                 │
-│    ├── RelayConnection.cs — WebSocket client + reconnect     │
-│    ├── ShellSession.cs    — PS runspace + stdout streaming   │
-│    └── VncSession.cs      — TightVNC server lifecycle + RFB  │
-│                             frame proxy                      │
-│                                                              │
-│  Registry: HKLM\SOFTWARE\IntuneAgent                        │
-│    └── DeviceToken (DPAPI-encrypted)                         │
-└──────────────────────────────────────────────────────────────┘
+│    1. POST /api/negotiate?role=admin   ─────────────────┐   │
+│    2. Connect WSS to returned URL  ─────────────────┐   │   │
+│    3. Send/receive JSON messages                │   │   │   │
+└────────────────────────────────────────────────│───│───┘   │
+                                                 │   │
+                                    ┌────────────▼───▼──────────────┐
+                                    │  Azure Functions App           │
+                                    │  (Consumption Plan)            │
+                                    │                                │
+                                    │  POST /api/negotiate           │
+                                    │    Validate token              │
+                                    │    Issue Web PubSub JWT        │
+                                    │    Return WSS endpoint URL     │
+                                    │                                │
+                                    │  onConnected handler           │
+                                    │    Register in Table Storage   │
+                                    │                                │
+                                    │  onDisconnected handler        │
+                                    │    Remove from Table Storage   │
+                                    │                                │
+                                    │  onMessage handler             │
+                                    │    Look up target connection   │
+                                    │    Call Web PubSub REST API    │
+                                    │    → SendToConnection(id, msg) │
+                                    └─────────────┬─────────────────┘
+                                                  │
+                                    ┌─────────────▼─────────────────┐
+                                    │  Azure Web PubSub              │
+                                    │  (Standard_S1)                 │
+                                    │                                │
+                                    │  hub: "agentHub"               │
+                                    │  All WebSocket connections      │
+                                    │  held here. Microsoft          │
+                                    │  manages TLS, scaling,         │
+                                    │  reconnects.                   │
+                                    └─────────────┬─────────────────┘
+                                                  │ WSS (TLS 1.3)
+                                                  │ *.webpubsub.azure.com
+┌─────────────────────────────────────────────────▼────────────────┐
+│  Managed Device (Windows 10/11)                                  │
+│                                                                  │
+│  IntuneAgent Windows Service                                     │
+│    ├── RelayConnection.cs — negotiate + WebSocket connect        │
+│    ├── ShellSession.cs    — PS runspace + stdout streaming       │
+│    └── VncSession.cs      — TightVNC lifecycle + RFB proxy       │
+│                                                                  │
+│  Registry: HKLM\SOFTWARE\IntuneAgent                            │
+│    ├── DeviceToken (DPAPI-encrypted HMAC token)                  │
+│    └── NegotiateUrl (Azure Functions /api/negotiate endpoint)    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Connection Sequence
+
+```
+Device startup:
+  1. Agent reads NegotiateUrl + DeviceToken from registry
+  2. POST {NegotiateUrl}?role=device  with Authorization: Bearer {DeviceToken}
+  3. Azure Functions validates HMAC token, registers device in Table Storage
+  4. Returns: { url: "wss://<hub>.webpubsub.azure.com/client/hubs/agentHub?access_token=<jwt>" }
+  5. Agent connects WebSocket to returned URL
+  6. Web PubSub triggers onConnected → Functions registers connectionId
+
+Admin session:
+  1. electron/relay/relay-client.ts calls ipc:agent:connect-relay
+  2. electron/ipc/agent.ts: POST {NegotiateUrl}?role=admin  with local session token
+  3. Azure Functions validates session, returns Web PubSub client URL
+  4. relay-client.ts connects WebSocket to returned URL
+  5. Admin is now connected to Web PubSub; can send messages to devices
 ```
 
 ### Component Inventory
 
 | Component | Language | Location | New / Modified |
 |-----------|----------|----------|----------------|
-| Relay Server | TypeScript (Node.js) | `RelayServer/` | New project |
+| Azure Web PubSub resource | Azure (managed) | Azure Portal / Bicep | Provisioned |
+| Azure Functions app | TypeScript (Node.js 20) | `RelayFunctions/` | New project |
+| Azure Table Storage | Azure (managed) | Same storage account as Functions | Provisioned |
 | IntuneAgent Windows Service | C# .NET 8 | `IntuneAgent/` | New project |
 | Agent PS install scripts | PowerShell 5.1 | `Source/IntuneAgent/` | New |
 | `electron/relay/relay-client.ts` | TypeScript | `IntuneManagerUI/` | New |
@@ -113,272 +167,328 @@ Both capabilities work regardless of whether the admin and device are on the sam
 
 | Threat | Mitigation |
 |--------|-----------|
-| Unauthorized admin connects to a device | Relay validates admin JWT (signed with `RELAY_SECRET`); admin JWT only issued to users with `admin` or `superadmin` role |
-| Agent connects to a spoofed relay server | Agent pins the relay's TLS certificate SHA-256 fingerprint at install time; rejects connections if fingerprint changes |
+| Unauthorized admin connects to a device | Azure Functions `negotiate` validates the IntuneManager session token before issuing a Web PubSub JWT; JWT includes role claim checked on every message route |
+| Device connects using a forged token | Device token is HMAC-SHA256 signed with `NEGOTIATE_SECRET`; Functions verifies HMAC before issuing Web PubSub access token |
+| Man-in-the-middle on relay traffic | All traffic is WSS to `*.webpubsub.azure.com` — Microsoft-managed CA-signed TLS 1.3; no custom cert management needed |
 | Device token exfiltrated from registry | Token stored DPAPI-encrypted (`ProtectedData.Protect`, `LocalMachine` scope); readable only by SYSTEM or admin-level processes |
-| Man-in-the-middle on relay traffic | All traffic is WSS (WebSocket over TLS 1.3); relay uses a CA-signed certificate |
-| Replay attack using captured admin JWT | Admin JWTs expire after 15 minutes; relay validates `exp` claim |
-| Lateral movement via PS runspace | PS runs as the service's account (SYSTEM by default, configurable); no network credentials forwarded |
-| VNC screen exposure to relay operator | VNC stream is AES-256-GCM end-to-end encrypted with a session key established via Diffie-Hellman; relay only routes opaque bytes |
-| Prompt injection: malicious script output tricks the terminal | Terminal renders output as plain text only (xterm.js with `disableStdin` mode when viewing history); no HTML rendering |
-| Admin installs agent on non-Intune device | Agent registration requires a valid Intune device ID verifiable against Graph API (relay checks on first connect) |
+| Replay attack using captured Web PubSub JWT | Web PubSub access tokens have a configurable TTL (set to 15 minutes); expired tokens are rejected by Web PubSub |
+| Admin impersonates another admin's session | Each Web PubSub JWT contains the admin's `username` claim; the Functions message handler verifies the sender's identity before routing |
+| Lateral movement via PS runspace | PS runs as the service account (SYSTEM by default, configurable); no network credentials forwarded to the runspace |
+| VNC screen exposure to Azure (relay operator) | VNC stream is AES-256-GCM end-to-end encrypted with a session key established via ECDH P-256; Azure Web PubSub routes opaque ciphertext and cannot decrypt frames |
+| Prompt injection via malicious PS output | xterm.js renders output as plain text only; no HTML/script evaluation |
+| `NEGOTIATE_SECRET` exposure in agent package | Secret is stored AES-256-CBC encrypted in IntuneManager `app_settings`; passed to install script as a PowerShell `-NegotiateSecret` parameter at packaging time; never written to `PACKAGE_SETTINGS.md` |
 
 ### Token Scheme
 
-**Device Token**
+**Device HMAC Token**
 ```
-deviceToken = HMAC-SHA256(RELAY_SECRET, deviceId + ":" + installTimestamp)
+deviceToken = HMAC-SHA256(NEGOTIATE_SECRET, deviceId + ":" + installTimestamp)
 ```
 - Generated by `Install-IntuneAgent.ps1` at install time
-- Stored in registry: `HKLM\SOFTWARE\IntuneAgent\DeviceToken` (DPAPI-encrypted)
-- Permanent (does not expire); relay can revoke by removing the device registration
+- Stored DPAPI-encrypted at `HKLM\SOFTWARE\IntuneAgent\DeviceToken`
+- Permanent; Azure Functions can revoke by blocking the deviceId in Table Storage
 
-**Admin JWT**
+**Web PubSub Client JWT (issued by Azure Functions)**
 ```json
 {
-  "sub": "username",
-  "role": "admin",
+  "aud": "https://<hub>.webpubsub.azure.com/client/hubs/agentHub",
+  "sub": "device:{deviceId}",          // or "admin:{username}"
+  "role": ["webpubsub.sendToGroup.all", "webpubsub.joinLeaveGroup.all"],
   "iat": 1743600000,
   "exp": 1743600900
 }
 ```
-- Issued by relay's `POST /api/auth/admin-token` endpoint
-- Request authenticated by the IntuneManager local session token (bcrypt-validated by the relay calling back to IntuneManager's `ipc:auth:validate-session` equivalent)
-- Signed with `RELAY_SECRET` (HS256)
-- 15-minute expiry; auto-refreshed while session is active
+- Signed with the Web PubSub resource's access key (held only by Azure Functions)
+- 15-minute TTL; agents and admin clients request a new JWT before expiry
 
 **VNC Session Key**
 ```
-ECDH P-256 ephemeral key pair negotiated per VNC session
-Derived shared secret → HKDF → AES-256-GCM session key
+ECDH P-256 ephemeral key pair per VNC session
+Derived shared secret → HKDF-SHA256 → AES-256-GCM session key
 ```
-- Negotiated inline in the `vnc:start` / `vnc:session-key` handshake
-- The relay never sees the plaintext VNC frames
+- Negotiated in the `vnc:start` / `vnc:session-key` message exchange
+- Azure Web PubSub routes the key exchange messages but cannot derive the session key
 
 ---
 
-## 4. Relay Server Specification
+## 4. Azure Functions Hub Specification
 
 ### Technology
 
 - **Runtime:** Node.js 20 LTS
 - **Language:** TypeScript
-- **Framework:** `ws` (WebSocket library) + `express` (HTTP API)
-- **Auth:** `jsonwebtoken` (JWT sign/verify)
-- **Crypto:** Node.js built-in `crypto` (HMAC, AES-GCM)
-- **Deployment:** Docker container → Azure Container Apps (or any VPS with Docker)
+- **Framework:** Azure Functions v4 (`@azure/functions`)
+- **Web PubSub SDK:** `@azure/web-pubsub` (server-side REST API calls)
+- **Table Storage:** `@azure/data-tables` (session/device registry)
+- **Auth:** `jsonwebtoken` (validate IntuneManager session tokens), `crypto` (HMAC verify)
+- **Deployment:** Azure Functions Consumption plan (serverless, ~$0/month)
 
-### HTTP API
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| `GET` | `/health` | None | Liveness probe |
-| `POST` | `/api/auth/admin-token` | Session token in body | Issue 15-min admin JWT |
-| `GET` | `/api/devices` | Admin JWT header | List online devices |
-| `DELETE` | `/api/devices/:deviceId` | Admin JWT header | Revoke device registration |
-
-### WebSocket Endpoints
-
-| Path | Auth | Who connects |
-|------|------|-------------|
-| `/ws/device` | Device token (query param `?token=`) | IntuneAgent service |
-| `/ws/admin` | Admin JWT (query param `?token=`) | IntuneManager Electron app |
-
-### Message Protocol
-
-All messages are JSON. Every message has a `type` field.
-
-#### Device → Relay
-
-| Type | Fields | Description |
-|------|--------|-------------|
-| `device:register` | `deviceId`, `token`, `hostname`, `osVersion` | First message after WS connect; relay authenticates token |
-| `device:heartbeat` | — | Sent every 30 s; relay updates `lastSeen` |
-| `shell:output` | `sessionId`, `data` (string), `isStderr` (bool) | Streamed PS output |
-| `shell:exit` | `sessionId`, `exitCode` | PS runspace closed |
-| `vnc:ready` | `sessionId`, `width`, `height` | VNC server started and listening |
-| `vnc:frame` | `sessionId`, `data` (base64 AES-GCM ciphertext) | RFB frame chunk |
-| `vnc:session-key` | `sessionId`, `publicKey` (base64 ECDH public key) | Device's ECDH public key for session key derivation |
-
-#### Relay → Device (forwarded from admin)
-
-| Type | Fields | Description |
-|------|--------|-------------|
-| `shell:start` | `sessionId`, `command` | Open PS runspace, execute command |
-| `shell:input` | `sessionId`, `data` | Send stdin to running PS runspace |
-| `shell:kill` | `sessionId` | Kill the PS runspace |
-| `vnc:start` | `sessionId` | Start TightVNC server |
-| `vnc:input` | `sessionId`, `event` | Forward mouse/keyboard event to VNC |
-| `vnc:stop` | `sessionId` | Stop TightVNC server |
-
-#### Admin → Relay
-
-| Type | Fields | Description |
-|------|--------|-------------|
-| `admin:list-devices` | — | Request online device list |
-| `shell:start` | `deviceId`, `sessionId`, `command` | Start PS session on device |
-| `shell:input` | `deviceId`, `sessionId`, `data` | Send stdin to device PS |
-| `shell:kill` | `deviceId`, `sessionId` | Kill PS session on device |
-| `vnc:start` | `deviceId`, `sessionId` | Start VNC session on device |
-| `vnc:session-key` | `deviceId`, `sessionId`, `publicKey` | Admin ECDH public key |
-| `vnc:input` | `deviceId`, `sessionId`, `event` | Forward input to device VNC |
-| `vnc:stop` | `deviceId`, `sessionId` | Stop VNC session on device |
-
-#### Relay → Admin
-
-| Type | Fields | Description |
-|------|--------|-------------|
-| `device:online` | `deviceId`, `hostname`, `osVersion` | Device connected to relay |
-| `device:offline` | `deviceId` | Device disconnected |
-| `devices:list` | `devices[]` | Response to `admin:list-devices` |
-| `shell:output` | `deviceId`, `sessionId`, `data`, `isStderr` | Forwarded from device |
-| `shell:exit` | `deviceId`, `sessionId`, `exitCode` | Forwarded from device |
-| `vnc:ready` | `deviceId`, `sessionId`, `width`, `height` | Forwarded from device |
-| `vnc:frame` | `deviceId`, `sessionId`, `data` | Forwarded (opaque) from device |
-| `vnc:session-key` | `deviceId`, `sessionId`, `publicKey` | Device's ECDH public key |
-| `error` | `code`, `message` | Relay-level error |
-
-### Relay File Structure
+### Azure Functions File Structure
 
 ```
-RelayServer/
+RelayFunctions/
 ├── src/
-│   ├── index.ts           — Express + WS server bootstrap
-│   ├── auth.ts            — JWT issuance + HMAC token verification
-│   ├── router.ts          — Message routing (device ↔ admin)
-│   ├── registry.ts        — In-memory device connection registry
-│   ├── api.ts             — HTTP route handlers
-│   └── types.ts           — Message type definitions
-├── Dockerfile
-├── docker-compose.yml
+│   ├── functions/
+│   │   ├── negotiate.ts        — POST /api/negotiate (token issuance)
+│   │   ├── onConnected.ts      — Web PubSub system event handler
+│   │   ├── onDisconnected.ts   — Web PubSub system event handler
+│   │   └── onMessage.ts        — Web PubSub user event handler (message router)
+│   ├── auth.ts                 — HMAC device token verify; session token verify
+│   ├── registry.ts             — Azure Table Storage CRUD for connection registry
+│   └── types.ts                — Message type definitions
+├── host.json
+├── local.settings.json         — (gitignored) local dev config
 ├── package.json
 └── tsconfig.json
 ```
 
-### Relay Environment Variables
+### Function: `POST /api/negotiate`
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `RELAY_SECRET` | Yes | 256-bit random hex string; used for HMAC and JWT signing |
-| `PORT` | No (default 8080) | HTTP/WS listen port |
-| `TLS_CERT_PATH` | Yes (production) | Path to TLS certificate PEM |
-| `TLS_KEY_PATH` | Yes (production) | Path to TLS private key PEM |
-| `CERT_FINGERPRINT` | Yes | SHA-256 fingerprint of TLS cert (for agent pinning) |
+**Purpose:** Exchange a device token or admin session token for a Web PubSub client access URL.
+
+**Request:**
+```
+POST /api/negotiate?role=device
+Authorization: Bearer <deviceHmacToken>
+Body: { "deviceId": "...", "hostname": "...", "osVersion": "..." }
+
+POST /api/negotiate?role=admin
+Authorization: Bearer <intuneManagerSessionToken>
+Body: { "username": "..." }
+```
+
+**Logic:**
+1. If `role=device`: verify HMAC token using `NEGOTIATE_SECRET`; reject if invalid
+2. If `role=admin`: verify the IntuneManager session token against the shared `SESSION_HMAC_SECRET`
+3. Generate Web PubSub client access URL via `WebPubSubServiceClient.getClientAccessToken()`
+4. Register the connection metadata in Table Storage (pending, will be confirmed with connectionId in `onConnected`)
+5. Return `{ url: "wss://..." }`
+
+**Response:**
+```json
+{ "url": "wss://<hub>.webpubsub.azure.com/client/hubs/agentHub?access_token=<jwt>" }
+```
+
+### Function: `onConnected` (Web PubSub system event)
+
+**Trigger:** Azure Web PubSub calls this via HTTP when a client completes its WebSocket handshake.
+
+**Logic:**
+1. Receive `{ connectionId, userId }` from Web PubSub
+2. Look up pending registration in Table Storage by `userId`
+3. Store `connectionId` in the registry row
+4. If role=device: mark device as online; add to group `devices`
+5. If role=admin: add to group `admins`
+6. Broadcast `device:online` message to all admins (if role=device)
+
+### Function: `onDisconnected` (Web PubSub system event)
+
+**Trigger:** Azure Web PubSub calls this via HTTP when a WebSocket connection drops.
+
+**Logic:**
+1. Look up connection by `connectionId` in Table Storage
+2. Remove the registry row
+3. If role=device: broadcast `device:offline` message to all admins
+4. If there are active shell/VNC sessions for this device: emit `shell:exit` / `vnc:stop` to the relevant admin connections
+
+### Function: `onMessage` (Web PubSub user event)
+
+**Trigger:** Azure Web PubSub calls this via HTTP when any client sends a message.
+
+**Logic — admin→device routing:**
+```
+Receive message from admin connection
+  → Read deviceId from message
+  → Look up device connectionId in Table Storage
+  → If device not online: send error back to admin
+  → Else: call WebPubSubServiceClient.sendToConnection(deviceConnectionId, strippedMessage)
+     (strip deviceId field; device only needs sessionId + command)
+```
+
+**Logic — device→admin routing:**
+```
+Receive message from device connection
+  → Read sessionId from message
+  → Look up which admin has an active session for this sessionId in Table Storage
+  → Call WebPubSubServiceClient.sendToConnection(adminConnectionId, enrichedMessage)
+     (add deviceId field so admin knows which device it's from)
+```
+
+**Active session registry (Table Storage):**
+
+| Table | PartitionKey | RowKey | Fields |
+|-------|-------------|--------|--------|
+| `connections` | `device` or `admin` | connectionId | userId, hostname, osVersion, connectedAt |
+| `sessions` | sessionId | `"session"` | deviceConnectionId, adminConnectionId, type (shell/vnc), startedAt |
+
+### Azure App Settings (Functions)
+
+| Setting | Description |
+|---------|-------------|
+| `WEBPUBSUB_CONNECTION_STRING` | Azure Web PubSub connection string (from Azure Portal) |
+| `STORAGE_CONNECTION_STRING` | Azure Storage connection string for Table Storage |
+| `NEGOTIATE_SECRET` | 256-bit hex string used to verify device HMAC tokens |
+| `SESSION_HMAC_SECRET` | Shared secret used to verify IntuneManager session tokens sent to the negotiate endpoint |
+| `WEBPUBSUB_HUB` | Hub name — `agentHub` |
 
 ---
 
-## 5. IntuneAgent Windows Service Specification
+## 5. Message Protocol
+
+All messages are JSON. Every message has a `type` field.
+The protocol is identical to what the Functions relay between clients — Web PubSub is transparent to the message contents.
+
+### Device → Admin (via Functions router)
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `shell:output` | `sessionId`, `data` (string), `isStderr` (bool) | Streamed PS output line |
+| `shell:exit` | `sessionId`, `exitCode` | PS runspace closed |
+| `vnc:ready` | `sessionId`, `width`, `height` | VNC server started |
+| `vnc:frame` | `sessionId`, `data` (base64 AES-GCM ciphertext) | Encrypted RFB frame chunk |
+| `vnc:session-key` | `sessionId`, `publicKey` (base64 ECDH public key) | Device's ECDH public key |
+
+### Admin → Device (via Functions router)
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `shell:start` | `deviceId`, `sessionId`, `command` | Open PS runspace |
+| `shell:input` | `deviceId`, `sessionId`, `data` | Send stdin to PS runspace |
+| `shell:kill` | `deviceId`, `sessionId` | Kill PS runspace |
+| `vnc:start` | `deviceId`, `sessionId` | Start TightVNC server |
+| `vnc:session-key` | `deviceId`, `sessionId`, `publicKey` | Admin's ECDH public key |
+| `vnc:input` | `deviceId`, `sessionId`, `event` | Mouse/keyboard event |
+| `vnc:stop` | `deviceId`, `sessionId` | Stop VNC session |
+
+### Functions → Admin (system notifications)
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `device:online` | `deviceId`, `hostname`, `osVersion` | Device connected |
+| `device:offline` | `deviceId` | Device disconnected |
+| `devices:list` | `devices[]` | Response to admin connect (list of currently online devices) |
+| `error` | `code`, `message` | Routing error (e.g., device not online) |
+
+---
+
+## 6. IntuneAgent Windows Service Specification
 
 ### Technology
 
-- **Runtime:** .NET 8.0 (self-contained, no runtime installation needed)
+- **Runtime:** .NET 8.0 (self-contained, no runtime installation needed on device)
 - **Service framework:** `Microsoft.Extensions.Hosting.WindowsServices`
 - **PS integration:** `Microsoft.PowerShell.SDK` NuGet package
 - **WebSocket:** `System.Net.WebSockets.ClientWebSocket` (built-in)
-- **Config:** `appsettings.json` in install directory
-- **Crypto:** `System.Security.Cryptography` (built-in) + `System.Security.Cryptography.ProtectedData`
+- **HTTP client:** `System.Net.Http.HttpClient` (for negotiate call)
+- **Crypto:** `System.Security.Cryptography` + `System.Security.Cryptography.ProtectedData`
 
 ### Agent File Structure
 
 ```
 IntuneAgent/
 ├── IntuneAgent.csproj
-├── Program.cs              — Host builder, service registration
-├── AgentService.cs         — IHostedService implementation; entry point
-├── RelayConnection.cs      — WebSocket client; reconnect loop; message dispatch
-├── ShellSession.cs         — PowerShell runspace lifecycle; output streaming
-├── VncSession.cs           — TightVNC server process management; RFB proxy
-├── SessionKeyExchange.cs   — ECDH P-256 key exchange; AES-GCM encrypt/decrypt
-├── RegistryHelper.cs       — DPAPI read/write for DeviceToken
-├── AgentConfig.cs          — Configuration model
-└── appsettings.json        — RelayUrl, CertFingerprint (populated at install time)
+├── Program.cs                — Host builder, Windows service registration
+├── AgentService.cs           — IHostedService; orchestrates RelayConnection + sessions
+├── RelayConnection.cs        — negotiate() → WebSocket connect; reconnect loop; message dispatch
+├── ShellSession.cs           — PowerShell runspace lifecycle; async output streaming
+├── VncSession.cs             — TightVNC process management; RFB proxy; frame encryption
+├── SessionKeyExchange.cs     — ECDH P-256 key pair; shared secret derivation; AES-256-GCM
+├── RegistryHelper.cs         — DPAPI read/write for DeviceToken; read NegotiateUrl, DeviceId
+├── AgentConfig.cs            — Configuration model
+├── Assets/
+│   └── TightVNC/             — tvnserver.exe + tvnserver.ini (loopback-only config)
+└── appsettings.json          — NegotiateUrl placeholder (overwritten at install time)
 ```
 
-### Agent Behaviour
+### Agent Startup Sequence
 
-**Startup sequence:**
-1. Read `RelayUrl` and `CertFingerprint` from `appsettings.json`
-2. Read `DeviceToken` from registry (DPAPI-decrypt)
-3. Read `DeviceId` from registry (`HKLM\SOFTWARE\Microsoft\Provisioning\OMADM\MDMDeviceID` or Graph-reported Intune ID written at install time)
-4. Enter reconnect loop:
-   - Connect WebSocket to `RelayUrl/ws/device?token=<DeviceToken>`
-   - Validate server TLS certificate fingerprint
-   - Send `device:register` message
-   - Enter message receive loop
-
-**Reconnect policy:**
-- On disconnect: exponential backoff starting at 5 s, max 5 min
-- On `device:register` rejection (invalid token): log error, stop reconnecting, write event to Windows Event Log
-
-**Shell session (`ShellSession.cs`):**
-- On `shell:start`: create a new `PowerShell` runspace with `RunspaceConfiguration.Create()`
-- Execute command asynchronously; stream `PSDataStreams.Output` and `Error` collections
-- Each output object: `ToString()` → send `shell:output` message
-- On `shell:kill` or runspace completion: send `shell:exit`, dispose runspace
-- Max concurrent shell sessions: 5 (configurable)
-
-**VNC session (`VncSession.cs`):**
-- On `vnc:start`:
-  1. Start `tvnserver.exe -service` (TightVNC bundled in `Assets/TightVNC/`) on `localhost:5900`
-  2. Set a one-time session password (random 8 chars)
-  3. Send `vnc:session-key` with agent's ECDH public key
-  4. After key exchange: derive AES-256-GCM session key
-  5. Connect local TCP socket to `127.0.0.1:5900`
-  6. Read RFB frames in a loop; encrypt each chunk; send `vnc:frame`
-- On `vnc:input`: decrypt event; forward to TightVNC via RFB input injection
-- On `vnc:stop`: disconnect from TightVNC; stop `tvnserver.exe` process; send no further frames
-
-**Certificate pinning (`RelayConnection.cs`):**
-```csharp
-handler.ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) => {
-    var fingerprint = cert.GetCertHashString(HashAlgorithmName.SHA256);
-    return fingerprint.Equals(config.CertFingerprint, StringComparison.OrdinalIgnoreCase);
-};
+```
+1. Read NegotiateUrl, DeviceId from registry
+2. DPAPI-decrypt DeviceToken from registry
+3. Enter reconnect loop:
+   a. POST {NegotiateUrl}?role=device
+      Body: { deviceId, hostname: $env:COMPUTERNAME, osVersion }
+      Authorization: Bearer {DeviceToken}
+   b. If HTTP 401/403: log to Windows Event Log; stop reconnecting
+   c. If HTTP 200: parse { url } from response
+   d. Connect ClientWebSocket to url
+   e. Enter message receive loop → dispatch to ShellSession or VncSession handlers
+4. On disconnect: exponential backoff (5s → 10s → 20s → ... max 5min); restart from step 3a
 ```
 
-### Agent Install Package
+### Shell Session (`ShellSession.cs`)
 
-**`Source/IntuneAgent/Install-IntuneAgent.ps1`**
+- On `shell:start`: create `PowerShell` runspace; invoke command with `BeginInvoke`
+- Stream `PSDataStreams.Output` and `.Error` via callbacks; each item → `shell:output` message
+- On `shell:kill` or natural completion: dispose runspace; send `shell:exit`
+- Max 5 concurrent sessions (configurable); reject `shell:start` if at limit
 
-1. Verify `IntuneAgent.exe` SHA256 matches manifest value
-2. Create `C:\Program Files\IntuneAgent\` directory
-3. Copy all agent files (exe, appsettings.json, TightVNC binaries) to install directory
-4. Generate device token: `HMAC-SHA256(RELAY_SECRET_INSTALL_PARAM, DeviceId)`  
-   *(The relay secret is passed as an install parameter from IntuneManager — never hardcoded)*
-5. DPAPI-encrypt token; write to `HKLM\SOFTWARE\IntuneAgent\DeviceToken`
-6. Write `DeviceId` to `HKLM\SOFTWARE\IntuneAgent\DeviceId`
-7. Configure TightVNC: set `allowLoopback=1`, `loopbackOnly=1`, `AcceptRfbConnections=1`  
-   *(TightVNC only listens on localhost — never exposed directly to the network)*
-8. Register and start Windows service: `sc.exe create IntuneAgent binPath= "..." start= auto`
-9. Write detection registry key: `HKLM\SOFTWARE\IntuneAgentInstaller\Version`
+### VNC Session (`VncSession.cs`)
+
+1. On `vnc:start`:
+   - Start `tvnserver.exe -service` from `Assets/TightVNC/`; TightVNC config enforces `allowLoopback=1`, `loopbackOnly=1`
+   - Generate ECDH P-256 key pair; send `vnc:session-key` with device public key
+2. On `vnc:session-key` from admin (key exchange complete):
+   - Derive shared secret; HKDF → AES-256-GCM session key
+   - Connect local `TcpClient` to `127.0.0.1:5900`
+   - Start read loop: read RFB frames → encrypt with AES-256-GCM → send `vnc:frame`
+3. On `vnc:input`: decrypt event bytes; inject into RFB input stream via local TCP write
+4. On `vnc:stop`: close TcpClient; stop `tvnserver.exe`; send no further frames
+
+### Agent Install Package (`Source/IntuneAgent/`)
+
+**`Install-IntuneAgent.ps1`** — PS 5.1 compatible
+
+1. Verify `IntuneAgent.exe` SHA256 matches manifest
+2. Create `C:\Program Files\IntuneAgent\` and copy all files
+3. Generate `DeviceToken`:
+   ```powershell
+   $hmac = [System.Security.Cryptography.HMACSHA256]::new(
+       [System.Text.Encoding]::UTF8.GetBytes($NegotiateSecret))
+   $input = [System.Text.Encoding]::UTF8.GetBytes("$DeviceId`:$InstallTimestamp")
+   $token = [Convert]::ToBase64String($hmac.ComputeHash($input))
+   ```
+4. DPAPI-encrypt `DeviceToken`; write to `HKLM:\SOFTWARE\IntuneAgent\DeviceToken`
+5. Write `DeviceId` to `HKLM:\SOFTWARE\IntuneAgent\DeviceId`
+6. Write `NegotiateUrl` to `HKLM:\SOFTWARE\IntuneAgent\NegotiateUrl`
+7. Configure TightVNC registry settings (`allowLoopback=1`, `loopbackOnly=1`)
+8. Create and start Windows service:
+   ```powershell
+   New-Service -Name "IntuneAgent" `
+     -BinaryPathName '"C:\Program Files\IntuneAgent\IntuneAgent.exe"' `
+     -StartupType Automatic -DisplayName "IntuneManager Remote Agent"
+   Start-Service "IntuneAgent"
+   ```
+9. Write detection key: `HKLM:\SOFTWARE\IntuneAgentInstaller\Version = "1.0.0"`
 10. Exit 0
 
-**`Source/IntuneAgent/Detect-IntuneAgent.ps1`**
-- Checks `HKLM\SOFTWARE\IntuneAgentInstaller\Version` equals expected version
-- Checks service `IntuneAgent` exists and is `Running`
+**`Detect-IntuneAgent.ps1`**
+- Registry `HKLM:\SOFTWARE\IntuneAgentInstaller\Version` equals `"1.0.0"` AND
+- `Get-Service IntuneAgent -ErrorAction SilentlyContinue` returns `Status = Running`
 
-**`Source/IntuneAgent/Uninstall-IntuneAgent.ps1`**
-1. Stop service: `Stop-Service IntuneAgent -Force`
-2. Delete service: `sc.exe delete IntuneAgent`
-3. Stop TightVNC if running: `Stop-Process -Name tvnserver -Force`
-4. Remove directory: `Remove-Item "C:\Program Files\IntuneAgent" -Recurse -Force`
-5. Remove registry keys: `Remove-Item HKLM:\SOFTWARE\IntuneAgent -Recurse`
-6. Remove detection key: `Remove-Item HKLM:\SOFTWARE\IntuneAgentInstaller -Recurse`
+**`Uninstall-IntuneAgent.ps1`**
+1. `Stop-Service IntuneAgent -Force -ErrorAction SilentlyContinue`
+2. `sc.exe delete IntuneAgent`
+3. `Stop-Process -Name tvnserver -Force -ErrorAction SilentlyContinue`
+4. `Remove-Item "C:\Program Files\IntuneAgent" -Recurse -Force`
+5. `Remove-Item HKLM:\SOFTWARE\IntuneAgent -Recurse -Force`
+6. `Remove-Item HKLM:\SOFTWARE\IntuneAgentInstaller -Recurse -Force`
 
-**`Source/IntuneAgent/PACKAGE_SETTINGS.md`** — standard format with install parameters documented.
+**`PACKAGE_SETTINGS.md`** — standard format; `install_command_line` includes `-NegotiateSecret` and `-NegotiateUrl` parameters. **These parameters contain secrets and must not be committed to public repositories.**
 
 ---
 
-## 6. IntuneManager Changes
+## 7. IntuneManager Changes
 
 ### New Settings Fields
 
-Two new fields added to `AppSettings` and `app_settings` DB table:
+Three new fields in `AppSettings` and `app_settings` DB table:
 
 | Field | DB Key | Description |
 |-------|--------|-------------|
-| `relayServerUrl` | `relay_server_url` | WSS URL of the relay server (e.g. `wss://relay.example.com`) |
-| `relaySecret` | `relay_secret_encrypted` | The relay's `RELAY_SECRET` — used to generate device tokens at agent packaging time. Stored AES-256-CBC encrypted. |
+| `negotiateUrl` | `relay_negotiate_url` | HTTPS URL of the Azure Functions `/api/negotiate` endpoint |
+| `negotiateSecret` | `relay_negotiate_secret_encrypted` | `NEGOTIATE_SECRET` used to sign device HMAC tokens at agent packaging time. AES-256-CBC encrypted at rest. |
+| `sessionHmacSecret` | `relay_session_hmac_secret_encrypted` | `SESSION_HMAC_SECRET` used to sign the admin session token sent to the negotiate endpoint. AES-256-CBC encrypted at rest. |
 
 Displayed in Settings → General under a new **Remote Agent** card.
 
@@ -386,201 +496,185 @@ Displayed in Settings → General under a new **Remote Agent** card.
 
 | Channel | Direction | Description |
 |---------|-----------|-------------|
-| `ipc:agent:connect-relay` | invoke | Connect/reconnect admin WebSocket to relay |
-| `ipc:agent:disconnect-relay` | invoke | Disconnect from relay |
-| `ipc:agent:get-online-devices` | invoke | Get list of devices currently connected to relay |
-| `ipc:agent:shell-start` | invoke | Start PS session on device |
-| `ipc:agent:shell-input` | invoke | Send stdin line to PS session |
-| `ipc:agent:shell-kill` | invoke | Kill PS session |
-| `ipc:agent:vnc-start` | invoke | Start VNC session on device |
-| `ipc:agent:vnc-stop` | invoke | Stop VNC session |
-| `agent:shell-output` | event (main → renderer) | Streamed PS output line |
-| `agent:shell-exit` | event | PS session ended |
-| `agent:device-online` | event | Device connected to relay |
-| `agent:device-offline` | event | Device disconnected from relay |
-| `agent:vnc-ready` | event | VNC session started on device |
-| `agent:vnc-frame` | event | Decrypted VNC frame chunk |
+| `ipc:agent:connect-relay` | invoke | Negotiate + connect admin WebSocket to Web PubSub |
+| `ipc:agent:disconnect-relay` | invoke | Disconnect from Web PubSub |
+| `ipc:agent:get-online-devices` | invoke | Request `devices:list` from Functions |
+| `ipc:agent:shell-start` | invoke | Send `shell:start` to device via relay |
+| `ipc:agent:shell-input` | invoke | Send `shell:input` to device via relay |
+| `ipc:agent:shell-kill` | invoke | Send `shell:kill` to device via relay |
+| `ipc:agent:vnc-start` | invoke | Send `vnc:start` to device via relay |
+| `ipc:agent:vnc-stop` | invoke | Send `vnc:stop` to device via relay |
+| `ipc:agent:vnc-input` | invoke | Send `vnc:input` to device via relay |
+| `ipc:agent:build-package` | invoke | Build `.intunewin` agent package with embedded secrets |
+| `agent:shell-output` | event → renderer | Streamed PS output line |
+| `agent:shell-exit` | event → renderer | PS session ended |
+| `agent:device-online` | event → renderer | Device connected to relay |
+| `agent:device-offline` | event → renderer | Device disconnected from relay |
+| `agent:vnc-ready` | event → renderer | VNC session started on device |
+| `agent:vnc-frame` | event → renderer | Decrypted VNC frame chunk (ready for noVNC) |
 
 ### New Pages
 
-**`/remote-terminal?deviceId=&sessionId=`**
-- Full-screen dark terminal
-- xterm.js (`@xterm/xterm` + `@xterm/addon-fit`)
-- Topbar: device name, connection status indicator, Kill Session button, Back to Devices
-- On mount: sends `ipc:agent:shell-start`; subscribes to `agent:shell-output` / `agent:shell-exit`
-- User input → `ipc:agent:shell-input`
-- On unmount: sends `ipc:agent:shell-kill`
+**`/remote-terminal?deviceId=&deviceName=&sessionId=`**
+- Full-screen dark terminal using `@xterm/xterm` + `@xterm/addon-fit`
+- Topbar: device name, relay connection indicator, Kill Session button, Back to Devices
+- On mount: `ipc:agent:shell-start`; subscribe to `agent:shell-output` / `agent:shell-exit`
+- User keystrokes → `ipc:agent:shell-input`
+- On unmount / Kill: `ipc:agent:shell-kill`
 
-**`/remote-desktop?deviceId=&sessionId=`**
-- noVNC rendered inside a `<webview>` or `<canvas>`
-- noVNC served from `electron/novnc/` (bundled local copy — no CDN dependency)
-- Topbar: device name, latency indicator, Disconnect button, Back to Devices
-- On mount: sends `ipc:agent:vnc-start`; listens for `agent:vnc-frame` events; feeds frames to noVNC canvas
-- On unmount: sends `ipc:agent:vnc-stop`
+**`/remote-desktop?deviceId=&deviceName=&sessionId=`**
+- noVNC canvas (bundled at `electron/novnc/` — no CDN dependency)
+- Topbar: device name, frame latency (ms), Disconnect, Back to Devices
+- On mount: `ipc:agent:vnc-start` + ECDH key exchange; subscribe to `agent:vnc-frame`
+- Decrypted RFB data piped to noVNC canvas
+- Mouse/keyboard events → `ipc:agent:vnc-input`
+- On unmount / Disconnect: `ipc:agent:vnc-stop`
 
 ### Devices Page Changes
 
-Two new buttons per device row:
-
-| Button | Enabled when | Action |
-|--------|-------------|--------|
-| **Connect PS** | Device is online in relay | Navigate to `/remote-terminal?deviceId=` |
-| **Remote Desktop** | Device is online in relay | Navigate to `/remote-desktop?deviceId=` |
-
-Online status is derived by cross-referencing the Intune device list with the relay's `agent:device-online`/`agent:device-offline` events.
-
-A relay connection status indicator is shown in the Devices page topbar (separate from the Intune tenant status).
+| Addition | Detail |
+|----------|--------|
+| Relay status indicator in topbar | Green dot = connected to Web PubSub; Red = disconnected (separate from Intune tenant status) |
+| Connect PS button per row | Enabled when device `deviceId` appears in the online devices list from relay; navigates to `/remote-terminal` |
+| Remote Desktop button per row | Same enablement logic; navigates to `/remote-desktop` |
 
 ---
 
-## 7. Agent Packaging via IntuneManager
+## 8. Agent Packaging via IntuneManager
 
-The IntuneAgent is packaged and deployed using IntuneManager's own packaging pipeline — the system uses itself to distribute its own agent.
+The IntuneAgent is packaged and deployed using IntuneManager's own packaging pipeline.
 
-### Flow
+### Build Flow
 
-1. Admin navigates to Settings → General → Remote Agent
-2. Enters relay server URL and relay secret
+1. Admin opens Settings → General → Remote Agent
+2. Enters `Negotiate URL` (Azure Functions endpoint), `Negotiate Secret`, and `Session HMAC Secret`
 3. Clicks **Build Agent Package**
-4. IntuneManager:
-   - Compiles `IntuneAgent.csproj` (or uses a pre-built release binary)
-   - Writes `appsettings.json` with the configured relay URL and cert fingerprint
-   - Runs `IntuneWinAppUtil.exe` on `Source/IntuneAgent/`
-   - Saves `Output/Install-IntuneAgent.intunewin`
-5. The package appears in the Deploy page's "Ready to Deploy" list
-6. Admin clicks Deploy → IntuneAgent is uploaded to Intune
-7. Intune pushes the agent to all targeted devices
-
-The relay secret is passed to the install script as a PowerShell parameter (`-RelaySecret`), included in the PACKAGE_SETTINGS.md `install_command_line`. The `.intunewin` package is per-tenant — each tenant builds their own with their own relay secret.
+4. `ipc:agent:build-package` handler in Electron:
+   - Reads pre-built `IntuneAgent.exe` release binary (bundled with IntuneManager or downloaded)
+   - Copies agent files to `Source/IntuneAgent/`
+   - The install command line in `PACKAGE_SETTINGS.md` embeds the `-NegotiateUrl` and `-NegotiateSecret` parameters
+5. Runs `IntuneWinAppUtil.exe` → `Output/Install-IntuneAgent.intunewin`
+6. Package appears in Deploy page "Ready to Deploy" list
+7. Admin clicks Deploy → IntuneAgent uploaded to Intune and assigned to all devices
 
 ---
 
-## 8. Relay Server Deployment
+## 9. Azure Provisioning
 
-### Recommended: Azure Container Apps
+### Required Azure Resources
 
-```yaml
-# deploy/azure-container-app.yml
-name: intune-relay
-containerImage: intunemanager-relay:latest
-ingress:
-  external: true
-  targetPort: 8080
-  transport: http2  # enables WebSocket
-env:
-  - name: RELAY_SECRET
-    secretRef: relay-secret
-  - name: PORT
-    value: "8080"
+```
+Resource Group: rg-intunemanager-relay
+  ├── Azure Web PubSub: wps-intunemanager (Standard_S1)
+  │     Hub: agentHub
+  │     Event handler URL: https://<functions>.azurewebsites.net/api/webpubsub
+  │
+  ├── Azure Functions App: func-intunemanager-relay (Consumption, Node 20, Windows)
+  │     App Settings: WEBPUBSUB_CONNECTION_STRING, STORAGE_CONNECTION_STRING,
+  │                   NEGOTIATE_SECRET, SESSION_HMAC_SECRET, WEBPUBSUB_HUB
+  │
+  └── Azure Storage Account: stintunemanagerrelay (LRS, Standard)
+        Table: connections
+        Table: sessions
 ```
 
-Estimated cost: ~$5-15/month on Azure Container Apps consumption plan for typical usage.
+### Bicep Template (`RelayFunctions/deploy/main.bicep`)
 
-### Alternative: Self-hosted Docker
+Provisions all three resources in one deployment. Parameters: `location`, `negotiateSecret` (secure string), `sessionHmacSecret` (secure string).
 
-```bash
-docker run -d \
-  -e RELAY_SECRET="<256-bit-hex>" \
-  -e TLS_CERT_PATH=/certs/cert.pem \
-  -e TLS_KEY_PATH=/certs/key.pem \
-  -e CERT_FINGERPRINT="<sha256>" \
-  -v /etc/letsencrypt/live/relay.example.com:/certs:ro \
-  -p 443:8080 \
-  intunemanager-relay:latest
-```
+### Estimated Monthly Cost
+
+| Resource | SKU | Estimated cost |
+|----------|-----|---------------|
+| Azure Web PubSub | Standard_S1 (1 unit = 1,000 concurrent connections) | $49/month |
+| Azure Functions | Consumption | $0–2/month |
+| Azure Table Storage | LRS | < $0.10/month |
+| **Total** | | **~$50/month** |
+
+> For dev/test: Web PubSub Free_F1 tier (20 concurrent connections, 20,000 messages/day) costs $0/month.
 
 ---
 
-## 9. Data Flows
+## 10. Data Flows
 
 ### PS Terminal Session (Happy Path)
 
 ```
-1. Admin clicks [Connect PS] on device row (Devices page)
-2. App navigates to /remote-terminal?deviceId=DEVICE-001&sessionId=sess-uuid
-3. RemoteTerminal.tsx mounts → calls ipc:agent:shell-start
-4. electron/ipc/agent.ts:
-     a. Ensures admin WS connection to relay is open
-     b. Sends { type: "shell:start", deviceId, sessionId, command: "" } to relay
-5. Relay forwards to device's WS connection
-6. IntuneAgent.ShellSession:
-     a. Opens PS runspace
-     b. Sends back { type: "vnc:ready" } ... wait, sends { type: "shell:output", data: "PS C:\\> " }
-7. Relay forwards shell:output to admin
-8. electron/ipc/agent.ts emits agent:shell-output event to renderer
-9. xterm.js renders "PS C:\\> " prompt
+1.  Admin clicks [Connect PS] on device row
+2.  App navigates to /remote-terminal?deviceId=DEVICE-001&sessionId=sess-uuid
+3.  RemoteTerminal mounts → ipc:agent:shell-start { deviceId, sessionId, command: "" }
+4.  electron/ipc/agent.ts sends { type:"shell:start", deviceId, sessionId } via Web PubSub
+5.  Web PubSub → onMessage Function
+6.  Function looks up device connectionId in Table Storage
+7.  Function: WebPubSubClient.sendToConnection(deviceConnId, { type:"shell:start", sessionId })
+8.  Web PubSub delivers to device
+9.  IntuneAgent.ShellSession opens PS runspace
+10. PS prompt outputs "PS C:\> " → shell:output message
+11. Web PubSub → onMessage Function → routes to admin connection → Web PubSub → admin
+12. electron/ipc/agent.ts emits agent:shell-output to renderer
+13. xterm.js renders "PS C:\> "
 
-10. User types "Get-Process" + Enter
-11. xterm.js → ipc:agent:shell-input { data: "Get-Process\n" }
-12. Relay forwards shell:input to device
-13. IntuneAgent.ShellSession executes in runspace, streams output lines
-14. Each output line: shell:output → relay → admin → agent:shell-output → xterm.js
-15. "shell:exit" when command completes; prompt re-rendered
+14. User types "Get-Process" + Enter
+15. xterm.js → ipc:agent:shell-input → relay → device
+16. Device executes in runspace; streams each output line as shell:output → relay → admin → xterm.js
+17. shell:exit emitted when command completes
 
-16. Admin clicks Kill Session / closes terminal
-17. ipc:agent:shell-kill sent → relay → device
-18. IntuneAgent disposes runspace
+18. Admin closes terminal → ipc:agent:shell-kill → relay → device → runspace disposed
 ```
 
 ### VNC Session (Happy Path)
 
 ```
-1. Admin clicks [Remote Desktop] on device row
-2. App navigates to /remote-desktop?deviceId=DEVICE-001&sessionId=sess-uuid
-3. RemoteDesktop.tsx mounts → calls ipc:agent:vnc-start
-4. electron/ipc/agent.ts generates ECDH P-256 key pair
-5. Sends { type: "vnc:start", deviceId, sessionId, publicKey: adminPubKey }
-6. Relay forwards to device
+1.  Admin clicks [Remote Desktop]
+2.  App navigates to /remote-desktop?deviceId=DEVICE-001&sessionId=sess-uuid
+3.  RemoteDesktop mounts → ipc:agent:vnc-start { deviceId, sessionId }
+4.  electron/ipc/agent.ts generates ECDH P-256 key pair (adminPrivKey, adminPubKey)
+5.  Sends { type:"vnc:start", deviceId, sessionId, publicKey: adminPubKeyBase64 } via relay
 
-7. IntuneAgent.VncSession:
-     a. Starts tvnserver.exe on localhost:5900
-     b. Generates ECDH P-256 key pair
-     c. Sends { type: "vnc:session-key", publicKey: devicePubKey }
-8. Relay forwards to admin
+6.  Device receives vnc:start
+7.  IntuneAgent starts tvnserver.exe on localhost:5900
+8.  Generates own ECDH key pair; derives shared secret from adminPubKey
+9.  Sends { type:"vnc:session-key", sessionId, publicKey: devicePubKeyBase64 }
 
-9. electron/ipc/agent.ts:
-     a. Receives device public key
-     b. Derives shared secret → AES-256-GCM session key
-     c. Sends { type: "vnc:session-key" confirmed } back to device
+10. electron/ipc/agent.ts receives vnc:session-key
+11. Derives shared secret from devicePubKey + adminPrivKey → AES-256-GCM session key
+12. Both sides now hold the same session key; Azure never saw it
 
-10. Both sides have derived the same session key (ECDH)
-11. IntuneAgent connects to tvnserver on localhost:5900
-12. Reads RFB frames → encrypts with AES-256-GCM → sends vnc:frame
-13. Relay forwards opaque ciphertext to admin
-14. electron/ipc/agent.ts decrypts → emits agent:vnc-frame to renderer
-15. RemoteDesktop.tsx feeds decrypted RFB data to noVNC canvas
-16. Admin sees device screen
+13. Agent connects to tvnserver on localhost:5900; reads RFB frames
+14. Encrypts each frame chunk with AES-256-GCM → sends vnc:frame
+15. Relay routes opaque ciphertext to admin
+16. electron/ipc/agent.ts decrypts chunk → emits agent:vnc-frame to renderer
+17. RemoteDesktop.tsx feeds decrypted RFB bytes to noVNC canvas
+18. Admin sees live device screen
 
-17. Admin moves mouse → noVNC captures event
-18. RemoteDesktop.tsx → ipc:agent:vnc-input { event: { type: "mouse", x, y, buttons } }
-19. electron/ipc/agent.ts encrypts event → sends vnc:input to relay
-20. Relay → device → IntuneAgent decrypts → injects into RFB input stream → TightVNC
+19. Admin moves mouse → noVNC captures event
+20. RemoteDesktop → ipc:agent:vnc-input → relay → device
+21. Device decrypts input event → injects into RFB TCP stream → TightVNC acts on it
 ```
 
 ---
 
-## 10. Known Constraints and Limitations
+## 11. Known Constraints and Limitations
 
 | Constraint | Impact | Notes |
 |-----------|--------|-------|
-| Device must be online and agent running | PS/RDP only works if device has checked in | Agent reconnects automatically on boot; if device is off, it shows as offline |
-| Relay server is a new infrastructure dependency | Admin must set up and operate relay | Azure Container Apps reduces ops burden to near zero |
-| PS sessions run as SYSTEM by default | Some user-context operations won't work | Configurable at install time — can run as a named service account |
-| VNC performance depends on relay bandwidth | Screen updates may lag on slow connections | noVNC supports quality tuning; 1080p is usable at 10 Mbps |
-| TightVNC is a third-party binary bundled in the agent | Adds ~5 MB to package size; subject to TightVNC license (GPLv2) | TightVNC is free for commercial use under GPLv2 |
-| Agent TLS cert pinning breaks on cert renewal | Agent needs reinstall if relay cert is replaced | Document cert renewal procedure; pin to intermediate CA instead of leaf cert as a long-term improvement |
-| No file transfer in Phase 1 | Cannot copy files to/from device via the terminal | File transfer is a Phase 3 feature |
+| Azure Web PubSub Standard_S1 required for production | ~$50/month new Azure spend | Free_F1 tier available for dev/test |
+| Device must be powered on and agent service running | PS/RDP only works if device is online | Agent reconnects automatically on boot |
+| VNC performance depends on relay + device bandwidth | Screen updates may lag on constrained connections | noVNC supports quality and compression tuning |
+| TightVNC license is GPLv2 | Distributable for free; source of bundled binary must be disclosed | Document in PACKAGE_SETTINGS.md |
+| PS sessions run as SYSTEM by default | Some user-context operations won't work | Service account configurable at install time |
+| No file transfer | Cannot copy files to/from device | Phase 3 feature |
+| Session not resumed on relay disconnect | If Web PubSub connection drops mid-session, session terminates | Admin must reconnect and start a new session |
 
 ---
 
-## 11. Out of Scope (Future Phases)
+## 12. Out of Scope (Future Phases)
 
 | Feature | Phase |
 |---------|-------|
-| Multi-monitor support in Remote Desktop | 3 |
-| File transfer (drag-and-drop to/from device) | 3 |
-| Session recording (log PS output + VNC frames to DB) | 3 |
-| Multi-admin viewing same device (shared session) | 4 |
-| Constrained Language Mode / allowed-command allowlist for PS | 3 |
-| Certificate rotation without agent reinstall | 3 |
-| Mobile (iOS/Android) IntuneManager client | Future |
+| Multi-monitor support | 3 |
+| File transfer (drag-and-drop) | 3 |
+| Session recording (PS log + VNC replay) | 3 |
+| PS command allowlist / Constrained Language Mode | 3 |
+| Bicep one-click Azure deployment from within IntuneManager | 3 |
+| Multi-admin viewing same device | 4 |

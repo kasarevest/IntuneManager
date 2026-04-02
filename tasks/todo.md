@@ -1523,10 +1523,10 @@ src/settings/GeneralTab.tsx           — full Claude AI section redesign with d
 
 ### Objective
 Build a two-phase remote management system:
-- **Phase 1:** IntuneAgent Windows service + Relay Server + PS terminal in IntuneManager (xterm.js)
+- **Phase 1:** IntuneAgent Windows service + Azure Web PubSub relay (Azure Functions) + PS terminal in IntuneManager (xterm.js)
 - **Phase 2:** VNC-based remote desktop (TightVNC + noVNC) layered on top of Phase 1 infrastructure
 
-The agent is deployed to managed devices as a Win32 Intune package using IntuneManager's own packaging pipeline.
+The relay infrastructure runs fully on Azure (Azure Web PubSub + Azure Functions + Azure Table Storage — no containers to operate). The agent is deployed to managed devices as a Win32 Intune package using IntuneManager's own packaging pipeline.
 
 ### Lessons Consulted
 - **Lesson 001:** Enhanced Workflow mandatory. Plan/peer-review/post-flight. No exceptions.
@@ -1538,8 +1538,8 @@ The agent is deployed to managed devices as a Win32 Intune package using IntuneM
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| Corporate proxy blocks outbound WSS on non-443 ports | High | High | Relay server listens on port 443; Azure Container Apps handles TLS termination |
-| Agent TLS cert pinning fails after relay cert renewal | Medium | High | Pin intermediate CA fingerprint, not leaf cert; document renewal procedure |
+| Corporate proxy blocks outbound WSS on non-443 ports | High | High | Azure Web PubSub endpoint is on port 443; standard HTTPS — should pass all corporate proxies |
+| Azure Web PubSub outage | Low | High | Microsoft SLA 99.9%; agent reconnects automatically when service recovers |
 | TightVNC bundled binary flagged by AV on managed devices | Medium | High | Test against Defender before deployment; consider signing the binary |
 | PS runspace leaks if admin closes terminal without Kill | Medium | Medium | Agent enforces max 5 concurrent sessions; orphaned runspaces cleaned up after 30 min idle |
 | ECDH session key derivation differs between C# and Node.js | High | High | Write an integration test that derives a shared secret on both sides and verifies decryption |
@@ -1552,16 +1552,23 @@ The agent is deployed to managed devices as a Win32 Intune package using IntuneM
 ### Dependency Graph
 
 ```
-Phase 0 — Infrastructure
-  RelayServer (Node.js/TS project scaffold + auth + router + registry)
+Phase 0 — Azure Infrastructure + Functions
+  Provision: Azure Web PubSub (Standard_S1) + Azure Functions + Table Storage
     ↓
-  RelayServer deployed (Docker / Azure Container Apps)
+  RelayFunctions/ project (Azure Functions v4, TypeScript)
+    → negotiate.ts (token issuance)
+    → onConnected.ts + onDisconnected.ts + onMessage.ts (event handlers)
+    → registry.ts (Table Storage CRUD)
+    → auth.ts (HMAC verify + session token verify)
     ↓
-  Integration test: relay routes messages between two WS clients
+  Deploy Functions to Azure; configure Web PubSub event handler URL
+    ↓
+  Integration test: two wscat clients (mock device + mock admin) connect via negotiate,
+  send messages through Web PubSub, verify routing
 
 Phase 1A — Agent Core
   IntuneAgent.csproj (.NET 8 Windows Service scaffold)
-    → RelayConnection.cs (WS client + reconnect + cert pinning)
+    → RelayConnection.cs (negotiate() HTTP call → WebSocket connect; reconnect)
     → AgentService.cs (host entry point)
     → RegistryHelper.cs (DPAPI token store)
     → AgentConfig.cs + appsettings.json
@@ -1581,7 +1588,7 @@ Phase 1C — IntuneManager PS Terminal UI
     → src/App.tsx (/remote-terminal route)
 
 Phase 1D — Settings + Agent Packaging
-  Settings: relayServerUrl + relaySecret fields
+  Settings: negotiateUrl + negotiateSecret + sessionHmacSecret fields
     → Build Agent Package button
     → Source/IntuneAgent/ PS scripts (Install/Detect/Uninstall)
     → PACKAGE_SETTINGS.md
@@ -1605,23 +1612,37 @@ Phase 2C — IntuneManager Remote Desktop UI
 
 ---
 
-## Phase 0 — Relay Server
+## Phase 0 — Azure Infrastructure + Functions
 
-### Checklist
+### Azure Provisioning Checklist
 
-- [ ] `RelayServer/` project scaffold: `npm init`, `tsconfig.json`, `package.json`
-- [ ] `src/types.ts` — all message type definitions (device↔relay↔admin protocol)
-- [ ] `src/auth.ts` — HMAC-SHA256 device token verification; JWT admin token issue/verify
-- [ ] `src/registry.ts` — in-memory device connection store (Map<deviceId, WebSocket>)
-- [ ] `src/router.ts` — message routing: admin→device, device→admin; error on unknown deviceId
-- [ ] `src/api.ts` — HTTP routes: GET /health, POST /api/auth/admin-token, GET /api/devices, DELETE /api/devices/:id
-- [ ] `src/index.ts` — Express + ws server; /ws/device and /ws/admin endpoints; TLS config
-- [ ] Unit tests: auth.ts (token verify), router.ts (message routing)
-- [ ] Integration test: two WS clients (mock device + mock admin), send message, verify delivery
-- [ ] `Dockerfile` + `docker-compose.yml`
-- [ ] Local test: `docker-compose up` → connect two wscat clients → verify routing works
-- [ ] `deploy/azure-container-app.yml` (deployment config)
-- [ ] Peer review of relay server before deployment
+- [ ] Create Azure Resource Group: `rg-intunemanager-relay`
+- [ ] Provision **Azure Web PubSub** resource: `wps-intunemanager`, SKU `Standard_S1`, hub name `agentHub`
+- [ ] Provision **Azure Storage Account**: `stintunemanagerrelay` (LRS, Standard); create tables `connections` and `sessions`
+- [ ] Provision **Azure Functions App**: `func-intunemanager-relay`, runtime Node 20, Consumption plan, Windows
+- [ ] Copy `WEBPUBSUB_CONNECTION_STRING` from Web PubSub resource → Functions App Settings
+- [ ] Copy `STORAGE_CONNECTION_STRING` from Storage Account → Functions App Settings
+- [ ] Generate 256-bit `NEGOTIATE_SECRET` and `SESSION_HMAC_SECRET` → Functions App Settings
+- [ ] Set `WEBPUBSUB_HUB=agentHub` in Functions App Settings
+- [ ] Write `RelayFunctions/deploy/main.bicep` — codify all above resources for repeatable deployment
+
+### Azure Functions Checklist
+
+- [ ] `RelayFunctions/` project scaffold: `func init --typescript`, `tsconfig.json`, `host.json`
+- [ ] `npm install @azure/functions @azure/web-pubsub @azure/data-tables jsonwebtoken`
+- [ ] `src/types.ts` — all message type definitions (device↔admin protocol, Web PubSub event payloads)
+- [ ] `src/auth.ts` — HMAC-SHA256 device token verify; session HMAC verify
+- [ ] `src/registry.ts` — Table Storage CRUD: upsert connection, get by userId, get by connectionId, delete
+- [ ] `src/functions/negotiate.ts` — `POST /api/negotiate?role=device|admin`; validate token; call `WebPubSubServiceClient.getClientAccessToken()`; register in Table Storage; return `{ url }`
+- [ ] `src/functions/onConnected.ts` — Web PubSub system event; confirm connectionId in Table Storage; broadcast `device:online` to admins if role=device
+- [ ] `src/functions/onDisconnected.ts` — Web PubSub system event; remove from Table Storage; broadcast `device:offline`; emit shell:exit/vnc:stop for any active sessions
+- [ ] `src/functions/onMessage.ts` — Web PubSub user event; parse message type; look up target connectionId; `sendToConnection()`; create/delete session rows for shell:start/exit
+- [ ] Configure Web PubSub event handler URL in Azure Portal: `https://func-intunemanager-relay.azurewebsites.net/api/webpubsub`
+- [ ] Unit tests: auth.ts HMAC verify, registry.ts CRUD (mock Table Storage client)
+- [ ] Integration test (local): `func start` + two wscat clients negotiate → connect → send shell:start → verify routing
+- [ ] Deploy to Azure: `func azure functionapp publish func-intunemanager-relay`
+- [ ] Integration test (Azure): repeat above against live Azure endpoints
+- [ ] Peer review of Functions code before moving to Phase 1A
 
 ---
 
@@ -1630,9 +1651,9 @@ Phase 2C — IntuneManager Remote Desktop UI
 ### Checklist
 
 - [ ] `IntuneAgent/IntuneAgent.csproj` — .NET 8 Worker Service template, self-contained Windows x64
-- [ ] `AgentConfig.cs` — configuration model (RelayUrl, CertFingerprint, DeviceId)
-- [ ] `RegistryHelper.cs` — DPAPI encrypt/decrypt DeviceToken; read DeviceId from Intune registry
-- [ ] `RelayConnection.cs` — ClientWebSocket with cert pinning; reconnect with exponential backoff; message send/receive loop; message dispatch to registered handlers
+- [ ] `AgentConfig.cs` — configuration model (NegotiateUrl; DeviceId read from registry at runtime)
+- [ ] `RegistryHelper.cs` — DPAPI encrypt/decrypt DeviceToken; read DeviceId + NegotiateUrl from registry
+- [ ] `RelayConnection.cs` — `negotiate()` HTTP call to NegotiateUrl → receive Web PubSub WSS URL → `ClientWebSocket.ConnectAsync()`; no custom cert pinning (Azure's CA-backed TLS handles this); reconnect with exponential backoff; message send/receive loop; message dispatch to handlers
 - [ ] `AgentService.cs` — IHostedService; wires RelayConnection + handlers; lifecycle management
 - [ ] `Program.cs` — host builder with WindowsService support, logging to Windows Event Log
 - [ ] Unit test: RegistryHelper DPAPI roundtrip (mock registry)
@@ -1676,19 +1697,19 @@ Phase 2C — IntuneManager Remote Desktop UI
 
 ### Checklist
 
-- [ ] `src/types/app.ts` — add relayServerUrl, relaySecret to AppSettings
-- [ ] `src/types/ipc.ts` — add relayServerUrl, relaySecret to SaveSettingsReq; add BuildAgentPackageRes
-- [ ] `src/lib/ipc.ts` — ipcAgentBuildPackage wrapper
-- [ ] `electron/ipc/settings.ts` — read/write relay_server_url, relay_secret_encrypted; add ipc:agent:build-package handler
-- [ ] `src/settings/GeneralTab.tsx` — Remote Agent card: relay URL field, relay secret field (masked), Build Agent Package button, build status indicator
-- [ ] `Source/IntuneAgent/Install-IntuneAgent.ps1` — full v1.0 (see spec section 5)
+- [ ] `src/types/app.ts` — add `negotiateUrl`, `negotiateSecret`, `sessionHmacSecret` to `AppSettings`
+- [ ] `src/types/ipc.ts` — add same fields to `SaveSettingsReq`; add `BuildAgentPackageRes`
+- [ ] `src/lib/ipc.ts` — `ipcAgentBuildPackage` wrapper
+- [ ] `electron/ipc/settings.ts` — read/write `relay_negotiate_url`, `relay_negotiate_secret_encrypted`, `relay_session_hmac_secret_encrypted`; add `ipc:agent:build-package` handler
+- [ ] `src/settings/GeneralTab.tsx` — Remote Agent card: Negotiate URL field, Negotiate Secret field (masked), Session HMAC Secret field (masked), Build Agent Package button with build status
+- [ ] `Source/IntuneAgent/Install-IntuneAgent.ps1` — full v1.0 per spec section 6; accepts `-NegotiateUrl`, `-NegotiateSecret` parameters; HMAC token generation via `HMACSHA256` class
 - [ ] `Source/IntuneAgent/Detect-IntuneAgent.ps1`
 - [ ] `Source/IntuneAgent/Uninstall-IntuneAgent.ps1`
-- [ ] `Source/IntuneAgent/PACKAGE_SETTINGS.md`
+- [ ] `Source/IntuneAgent/PACKAGE_SETTINGS.md` — note: install command line contains secrets; do NOT commit to public repos
 - [ ] Parse-check all 3 PS scripts — all PASS
 - [ ] Peer review of install scripts before packaging
 - [ ] Build `.intunewin`: `IntuneWinAppUtil.exe -c Source\IntuneAgent -s Install-IntuneAgent.ps1 -o Output`
-- [ ] Deploy via IntuneManager to test device; verify agent installs, starts, connects to relay
+- [ ] Deploy via IntuneManager to test device; verify agent installs, starts, negotiates with Azure Functions, connects to Web PubSub, appears online in Devices page
 - [ ] `npx tsc --noEmit` — 0 errors
 - [ ] Post-flight review
 
