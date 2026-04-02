@@ -610,6 +610,37 @@ Extracting result processing into stable `useCallback` functions avoids duplicat
 
 ---
 
+## Lesson 010 — Stale Compiled .js Files Shadowing TypeScript Source (2026-04-02)
+
+### Keywords
+`vite`, `typescript`, `tsc`, `noEmit`, `js files`, `shadow`, `compiled artifacts`, `extension resolution`, `electron`, `build script`
+
+### What Happened
+Multiple sessions of TypeScript changes (Dashboard v2, caching, new user setup) appeared to have no effect when running the app. Root cause: `package.json` build script ran a bare `tsc` command (no `--noEmit`, no `outDir` in `tsconfig.json`), which emitted compiled `.js` files directly into `src/` alongside the `.tsx` source files. Vite resolves `.js` before `.tsx` in its default extension resolution order (`['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', ...]`), so ALL TypeScript changes were silently ignored — the app ran the old stale compiled `.js` files throughout.
+
+### Anti-Pattern (Why It Happened)
+`tsconfig.json` had no `outDir` and no `noEmit`, so TypeScript defaulted to emitting next to source files. The build script intended `tsc` as a type-check step only, but without `--noEmit`, it emitted `.js` artifacts. The `.js` files were committed to the repo (no `.gitignore`), and over time became stale relative to the `.tsx` source.
+
+**The silent failure mode is particularly dangerous:** Vite loads the stale `.js` file without warning. The app runs, just without any of your recent changes.
+
+### Heuristic (Prevention)
+
+1. **Always add `"noEmit": true` to `tsconfig.json`** for any project where Vite (or another bundler) handles the build. TypeScript should only type-check; the bundler bundles.
+2. **Always use `tsc --noEmit` in build scripts**, never bare `tsc`, unless you explicitly want `.js` output to a separate `outDir`.
+3. **Add `src/**/*.js` to `.gitignore`** (when `src/` contains only `.ts`/`.tsx` source files) to prevent compiled artifacts from being committed.
+4. **If a code change appears to have no effect**, immediately check for `.js` shadow files with the same basename as your `.ts`/`.tsx` files.
+
+### Technical Patterns Established
+
+| Pattern | Rule |
+|---------|------|
+| tsconfig.json for Vite projects | Always include `"noEmit": true` |
+| build script type-check | Use `tsc --noEmit` not `tsc` |
+| Extension shadowing diagnosis | Run `find src -name "*.js"` and compare to `.tsx` counterparts when changes have no effect |
+| Cleanup command | `find src -name "*.js" -exec rm {} \;` (after adding noEmit to prevent regeneration) |
+
+---
+
 ## Lesson Template (copy for new entries)
 
 ```
