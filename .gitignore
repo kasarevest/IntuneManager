@@ -2,11 +2,16 @@
 IntuneManagerUI/node_modules/
 IntuneManagerUI/dist/
 IntuneManagerUI/dist-electron/
+IntuneManagerUI/dist-installer/
 IntuneManagerUI/release/
 IntuneManagerUI/*.tsbuildinfo
 
 # Electron build output (installers)
 IntuneManagerUI/out/
+
+# TypeScript compiled JS artifacts (tsc outputs to src/ when not using vite)
+IntuneManagerUI/src/**/*.js
+IntuneManagerUI/src/**/*.js.map
 
 # Local dev environment
 IntuneManagerUI/.env

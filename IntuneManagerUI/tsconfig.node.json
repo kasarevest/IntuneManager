@@ -5,6 +5,8 @@
     "moduleResolution": "node",
     "composite": true,
     "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
     "outDir": "dist-electron",
     "rootDir": "electron",
     "types": ["node"],

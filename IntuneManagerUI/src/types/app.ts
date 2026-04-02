@@ -49,6 +49,8 @@ export interface AppSettings {
   claudeApiKey: string
   defaultMinOs: string
   logRetentionDays: number
+  awsRegion: string
+  awsBedrockModelId: string
 }
 
 export interface DeviceRow {

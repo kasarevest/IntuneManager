@@ -286,6 +286,58 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
       return { success: false, error: (err as Error).message }
     }
   })
+
+  // App install health (per-app success/failure rates from installSummary)
+  ipcMain.handle('ipc:ps:get-app-install-stats', async () => {
+    const result = await runPsScript('Get-AppInstallStats.ps1', [])
+    return result.result ?? { success: false, apps: [], error: 'No result from PS script' }
+  })
+
+  // Windows Update states (beta endpoint — featureUpdateVersion + status per device)
+  ipcMain.handle('ipc:ps:get-update-states', async () => {
+    const result = await runPsScript('Get-UpdateStates.ps1', [])
+    return result.result ?? { success: false, summary: {}, states: [], error: 'No result from PS script' }
+  })
+
+  // User Experience Analytics scores (requires UserExperienceAnalytics.Read.All)
+  ipcMain.handle('ipc:ps:get-uea-scores', async () => {
+    const result = await runPsScript('Get-UEAScores.ps1', [])
+    return result.result ?? { success: false, overview: null, appHealth: [], error: 'No result from PS script' }
+  })
+
+  // Autopilot enrollment events (requires DeviceManagementServiceConfig.ReadWrite.All)
+  ipcMain.handle('ipc:ps:get-autopilot-events', async () => {
+    const result = await runPsScript('Get-AutopilotEvents.ps1', [])
+    return result.result ?? { success: false, events: [], error: 'No result from PS script' }
+  })
+
+  // AWS SSO login — launches `aws sso login` for Bedrock access
+  ipcMain.handle('ipc:aws:sso-login', async (_event, req: { profile?: string }) => {
+    return new Promise<{ success: boolean; error?: string }>((resolve) => {
+      const args = ['sso', 'login']
+      if (req.profile) args.push('--profile', req.profile)
+
+      const proc = spawn('aws', args, {
+        shell: true,
+        windowsHide: false  // show terminal so user can complete SSO browser flow
+      })
+
+      let stderr = ''
+      proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve({ success: true })
+        } else {
+          resolve({ success: false, error: stderr.trim() || `aws sso login exited with code ${code}` })
+        }
+      })
+
+      proc.on('error', (err) => {
+        resolve({ success: false, error: `AWS CLI not found or failed to start: ${err.message}` })
+      })
+    })
+  })
 }
 
 export { runPsScript }

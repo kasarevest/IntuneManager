@@ -14,6 +14,7 @@ try {
     # Fetch all managed devices with the fields needed for device health view
     $select = 'id,deviceName,userPrincipalName,operatingSystem,osVersion,' +
               'complianceState,managementState,enrolledDateTime,lastSyncDateTime,' +
+              'deviceEnrollmentType,joinType,' +
               'windowsProtectionState,configurationManagerClientHealthState'
 
     $uri = 'https://graph.microsoft.com/beta/deviceManagement/managedDevices' +
@@ -45,6 +46,11 @@ try {
         # If windowsProtectionState is available, use it for malware/protection.
         $winUpdateStatus = 'unknown'
         $driverUpdateStatus = 'unknown'
+        $fMalwareProtectionEnabled  = $false
+        $fRealTimeProtectionEnabled = $false
+        $fSignatureUpdateOverdue    = $false
+        $fQuickScanOverdue          = $false
+        $fRebootRequired            = $false
 
         try {
             if ($dev.PSObject.Properties['windowsProtectionState'] -and $dev.windowsProtectionState) {
@@ -57,6 +63,23 @@ try {
                     $winUpdateStatus = 'updated'
                 } elseif ($scanPending) {
                     $winUpdateStatus = 'needsUpdate'
+                }
+
+                # Dashboard v2: extract additional Defender/security fields
+                if ($wps.PSObject.Properties['malwareProtectionEnabled']) {
+                    $fMalwareProtectionEnabled = [bool]$wps.malwareProtectionEnabled
+                }
+                if ($wps.PSObject.Properties['realTimeProtectionEnabled']) {
+                    $fRealTimeProtectionEnabled = [bool]$wps.realTimeProtectionEnabled
+                }
+                if ($wps.PSObject.Properties['signatureUpdateOverdue']) {
+                    $fSignatureUpdateOverdue = [bool]$wps.signatureUpdateOverdue
+                }
+                if ($wps.PSObject.Properties['quickScanOverdue']) {
+                    $fQuickScanOverdue = [bool]$wps.quickScanOverdue
+                }
+                if ($wps.PSObject.Properties['rebootRequired']) {
+                    $fRebootRequired = [bool]$wps.rebootRequired
                 }
             }
         } catch { $winUpdateStatus = 'unknown' }
@@ -87,28 +110,37 @@ try {
         )
 
         # PS 5.1 does not support ternary ? : — extract fields via if/else first
-        $fDeviceName        = if ($dev.PSObject.Properties['deviceName'])         { [string]$dev.deviceName }         else { '' }
-        $fUserPrincipalName = if ($dev.PSObject.Properties['userPrincipalName'])  { [string]$dev.userPrincipalName }  else { '' }
-        $fOperatingSystem   = if ($dev.PSObject.Properties['operatingSystem'])    { [string]$dev.operatingSystem }    else { '' }
-        $fOsVersion         = if ($dev.PSObject.Properties['osVersion'])          { [string]$dev.osVersion }          else { '' }
-        $fManagementState   = if ($dev.PSObject.Properties['managementState'])    { [string]$dev.managementState }    else { '' }
-        $fEnrolledDateTime  = if ($dev.PSObject.Properties['enrolledDateTime'])   { [string]$dev.enrolledDateTime }   else { '' }
-        $fLastSyncDateTime  = if ($dev.PSObject.Properties['lastSyncDateTime'])   { [string]$dev.lastSyncDateTime }   else { '' }
+        $fDeviceName           = if ($dev.PSObject.Properties['deviceName'])           { [string]$dev.deviceName }           else { '' }
+        $fUserPrincipalName    = if ($dev.PSObject.Properties['userPrincipalName'])    { [string]$dev.userPrincipalName }    else { '' }
+        $fOperatingSystem      = if ($dev.PSObject.Properties['operatingSystem'])      { [string]$dev.operatingSystem }      else { '' }
+        $fOsVersion            = if ($dev.PSObject.Properties['osVersion'])            { [string]$dev.osVersion }            else { '' }
+        $fManagementState      = if ($dev.PSObject.Properties['managementState'])      { [string]$dev.managementState }      else { '' }
+        $fEnrolledDateTime     = if ($dev.PSObject.Properties['enrolledDateTime'])     { [string]$dev.enrolledDateTime }     else { '' }
+        $fLastSyncDateTime     = if ($dev.PSObject.Properties['lastSyncDateTime'])     { [string]$dev.lastSyncDateTime }     else { '' }
+        $fDeviceEnrollmentType = if ($dev.PSObject.Properties['deviceEnrollmentType']) { [string]$dev.deviceEnrollmentType } else { '' }
+        $fJoinType             = if ($dev.PSObject.Properties['joinType'])             { [string]$dev.joinType }             else { '' }
 
         @{
-            id                  = [string]$dev.id
-            deviceName          = $fDeviceName
-            userPrincipalName   = $fUserPrincipalName
-            operatingSystem     = $fOperatingSystem
-            osVersion           = $fOsVersion
-            complianceState     = [string]$compliance
-            managementState     = $fManagementState
-            enrolledDateTime    = $fEnrolledDateTime
-            lastSyncDateTime    = $fLastSyncDateTime
-            windowsUpdateStatus = [string]$winUpdateStatus
-            driverUpdateStatus  = [string]$driverUpdateStatus
-            hasDiagnostics      = [bool]$hasDiagnostics
-            needsAttention      = [bool]$needsAttention
+            id                       = [string]$dev.id
+            deviceName               = $fDeviceName
+            userPrincipalName        = $fUserPrincipalName
+            operatingSystem          = $fOperatingSystem
+            osVersion                = $fOsVersion
+            complianceState          = [string]$compliance
+            managementState          = $fManagementState
+            enrolledDateTime         = $fEnrolledDateTime
+            lastSyncDateTime         = $fLastSyncDateTime
+            windowsUpdateStatus      = [string]$winUpdateStatus
+            driverUpdateStatus       = [string]$driverUpdateStatus
+            hasDiagnostics           = [bool]$hasDiagnostics
+            needsAttention           = [bool]$needsAttention
+            deviceEnrollmentType     = $fDeviceEnrollmentType
+            joinType                 = $fJoinType
+            malwareProtectionEnabled = [bool]$fMalwareProtectionEnabled
+            realTimeProtectionEnabled = [bool]$fRealTimeProtectionEnabled
+            signatureUpdateOverdue   = [bool]$fSignatureUpdateOverdue
+            quickScanOverdue         = [bool]$fQuickScanOverdue
+            rebootRequired           = [bool]$fRebootRequired
         }
     }
 

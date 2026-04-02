@@ -13,7 +13,7 @@ const PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz234567
 function generatePassword(length = 16): string {
   const bytes = crypto.randomBytes(length)
   return Array.from(bytes)
-    .map(b => PASSWORD_ALPHABET[b % PASSWORD_ALPHABET.length])
+    .map((b: number) => PASSWORD_ALPHABET[b % PASSWORD_ALPHABET.length])
     .join('')
 }
 
