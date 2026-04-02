@@ -110,7 +110,9 @@ function saveCache(db: Database, key: string, data: Record<string, unknown>): vo
 // ─── IPC Registration ─────────────────────────────────────────────────────────
 
 export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void {
-  const sendToRenderer = (channel: string, data: unknown) => win.webContents.send(channel, data)
+  const sendToRenderer = (channel: string, data: unknown) => {
+    if (!win.isDestroyed()) win.webContents.send(channel, data)
+  }
 
   // Tenant connect — interactive=true removes -NonInteractive so browser can open
   ipcMain.handle('ipc:ps:connect-tenant', async (_event, req: { useDeviceCode?: boolean }) => {

@@ -488,7 +488,7 @@ export default function Dashboard() {
     const cacheHits = [appsRes, devicesRes, installRes, updateRes, ueaRes, autopilotRes]
       .filter(r => r.status === 'fulfilled' && (r.value as unknown as Record<string, unknown>).fromCache === true).length
     if (cacheHits > 0) {
-      pendingCacheRefreshes.current = cacheHits
+      pendingCacheRefreshes.current += cacheHits
       setBackgroundRefreshing(true)
     }
 
