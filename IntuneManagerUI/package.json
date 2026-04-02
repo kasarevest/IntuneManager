@@ -12,6 +12,7 @@
     "postinstall": "powershell -ExecutionPolicy Bypass -Command \"$env:PYTHON='C:\\Program Files\\Python39\\python.exe'; npx electron-rebuild -f -w better-sqlite3\""
   },
   "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.27.0",
     "@anthropic-ai/sdk": "^0.36.3",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.9.1",
