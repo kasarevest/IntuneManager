@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
@@ -11,8 +11,13 @@ import {
   ipcPsGetIntuneApps, ipcPsGetDevices,
   ipcPsGetAppInstallStats, ipcPsGetUpdateStates,
   ipcPsGetUEAScores, ipcPsGetAutopilotEvents,
+  onCacheAppsUpdated, onCacheDevicesUpdated, onCacheInstallStatsUpdated,
+  onCacheUpdateStatesUpdated, onCacheUEAScoresUpdated, onCacheAutopilotEventsUpdated,
 } from '../lib/ipc'
-import type { DeviceItem, AppInstallStat, AutopilotEvent } from '../types/ipc'
+import type {
+  DeviceItem, AppInstallStat, AutopilotEvent,
+  IntuneAppsRes, GetDevicesRes, AppInstallStatsRes, UpdateStatesRes, UEAScoresRes, AutopilotEventsRes,
+} from '../types/ipc'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -299,6 +304,137 @@ export default function Dashboard() {
   const [loadingUpdate, setLoadingUpdate] = useState(false)
   const [loadingUEA, setLoadingUEA] = useState(false)
   const [loadingAutopilot, setLoadingAutopilot] = useState(false)
+  const [backgroundRefreshing, setBackgroundRefreshing] = useState(false)
+  const pendingCacheRefreshes = useRef(0)
+
+  // ─── Result processors (shared by fetchSummary and cache update events) ───────
+
+  const applyAppsResult = useCallback((data: IntuneAppsRes) => {
+    if (!data.success) return
+    const rawApps = (data.apps ?? []) as Array<Record<string, unknown>>
+    const total = rawApps.length
+    const published = rawApps.filter(a => String(a.publishingState ?? '') === 'published').length
+    const pending = rawApps.filter(a =>
+      String(a.publishingState ?? '') === 'pending' || String(a.publishingState ?? '') === 'processing'
+    ).length
+    setAppSummary({ total, current: published, updateAvailable: 0, cloudOnly: total - published - pending, unknown: pending })
+  }, [])
+
+  const applyDevicesResult = useCallback((data: GetDevicesRes) => {
+    if (!data.success) return
+    const devs = data.devices
+    setDeviceSummary({
+      total: devs.length,
+      compliant: devs.filter(d => d.complianceState === 'compliant').length,
+      nonCompliant: devs.filter(d => d.complianceState === 'noncompliant').length,
+      inGracePeriod: devs.filter(d => d.complianceState === 'inGracePeriod').length,
+      needsAttention: devs.filter(d => d.needsAttention).length,
+      windowsUpdateNeeded: devs.filter(d => d.windowsUpdateStatus === 'needsUpdate').length,
+      driverUpdateNeeded: devs.filter(d => d.driverUpdateStatus === 'needsUpdate').length,
+    })
+    const buckets = new Map<string, number>()
+    for (const d of devs) {
+      const bucket = parseOsBucket(d.osVersion)
+      buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1)
+    }
+    setOsDistribution(
+      Array.from(buckets.entries())
+        .map(([version, count]) => ({ version, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 8)
+    )
+    const etBuckets = new Map<string, number>()
+    for (const d of devs) {
+      const et = d.deviceEnrollmentType || 'unknown'
+      const label = ENROLLMENT_TYPE_LABELS[et] ?? et
+      etBuckets.set(label, (etBuckets.get(label) ?? 0) + 1)
+    }
+    setEnrollmentTypes(
+      Array.from(etBuckets.entries())
+        .map(([name, value]) => ({ name, value }))
+        .sort((a, b) => b.value - a.value)
+    )
+    const rtpOff = devs.filter(d => d.realTimeProtectionEnabled === false).length
+    const malwareOff = devs.filter(d => d.malwareProtectionEnabled === false).length
+    const sigOverdue = devs.filter(d => d.signatureUpdateOverdue).length
+    const scanOverdue = devs.filter(d => d.quickScanOverdue).length
+    const reboot = devs.filter(d => d.rebootRequired).length
+    const attn = devs.filter(d =>
+      d.realTimeProtectionEnabled === false || d.signatureUpdateOverdue || d.quickScanOverdue || d.rebootRequired
+    ).slice(0, 10)
+    setSecuritySummary({ rtpDisabled: rtpOff, malwareDisabled: malwareOff, signatureOverdue: sigOverdue, scanOverdue, rebootPending: reboot, attentionDevices: attn })
+  }, [])
+
+  const applyInstallResult = useCallback((data: AppInstallStatsRes) => {
+    if (data.permissionError) {
+      setAppInstallPermErr(true)
+    } else if (data.success) {
+      setAppInstallPermErr(false)
+      const sorted = [...(data.apps ?? [])].sort((a, b) => b.failed - a.failed)
+      setAppInstallStats(sorted)
+      setAppInstallTruncated(data.truncated ?? false)
+    }
+  }, [])
+
+  const applyUpdateResult = useCallback((data: UpdateStatesRes) => {
+    if (data.permissionError) {
+      setUpdatePermErr(true)
+    } else if (data.success) {
+      setUpdatePermErr(false)
+      setUpdateSummary(data.summary as unknown as Record<string, number>)
+      const versionMap = new Map<string, { completed: number; pending: number; failed: number; notStarted: number; inProgress: number }>()
+      for (const s of data.states ?? []) {
+        const ver = s.featureUpdateVersion || 'Unknown'
+        if (!versionMap.has(ver)) versionMap.set(ver, { completed: 0, pending: 0, failed: 0, notStarted: 0, inProgress: 0 })
+        const entry = versionMap.get(ver)!
+        const st = s.status as keyof typeof entry
+        if (st in entry) entry[st]++
+      }
+      setUpdateVersions(
+        Array.from(versionMap.entries())
+          .map(([version, counts]) => ({ version, ...counts }))
+          .sort((a, b) => b.completed - a.completed)
+          .slice(0, 8)
+      )
+    }
+  }, [])
+
+  const applyUEAResult = useCallback((data: UEAScoresRes) => {
+    if (data.permissionError) {
+      setUeaPermErr(true)
+    } else if (data.success) {
+      setUeaPermErr(false)
+      setUeaOverview(data.overview)
+      setUeaAppHealth(data.appHealth ?? [])
+    }
+  }, [])
+
+  const applyAutopilotResult = useCallback((data: AutopilotEventsRes) => {
+    if (data.permissionError) {
+      setAutopilotPermErr(true)
+    } else if (data.success) {
+      setAutopilotPermErr(false)
+      const events = data.events as AutopilotEvent[]
+      const trend = new Map<string, { success: number; failed: number }>()
+      const now = Date.now()
+      for (let i = 29; i >= 0; i--) {
+        const d = new Date(now - i * 86400000)
+        const key = d.toISOString().slice(0, 10)
+        trend.set(key, { success: 0, failed: 0 })
+      }
+      for (const ev of events) {
+        if (!ev.deviceRegisteredDateTime) continue
+        const key = ev.deviceRegisteredDateTime.slice(0, 10)
+        if (!trend.has(key)) continue
+        const entry = trend.get(key)!
+        if (ev.enrollmentState === 'enrolled') entry.success++
+        else entry.failed++
+      }
+      setEnrollmentTrend(
+        Array.from(trend.entries()).map(([date, v]) => ({ date: date.slice(5), ...v }))
+      )
+    }
+  }, [])
 
   const fetchSummary = useCallback(async () => {
     const errs: string[] = []
@@ -328,13 +464,7 @@ export default function Dashboard() {
 
     // ── Apps ──────────────────────────────────────────────────────────────────
     if (appsRes.status === 'fulfilled' && appsRes.value.success) {
-      const rawApps = (appsRes.value.apps ?? []) as Array<Record<string, unknown>>
-      const total = rawApps.length
-      const published = rawApps.filter(a => String(a.publishingState ?? '') === 'published').length
-      const pending = rawApps.filter(a =>
-        String(a.publishingState ?? '') === 'pending' || String(a.publishingState ?? '') === 'processing'
-      ).length
-      setAppSummary({ total, current: published, updateAvailable: 0, cloudOnly: total - published - pending, unknown: pending })
+      applyAppsResult(appsRes.value)
     } else {
       if (appsRes.status === 'rejected') errs.push('Apps: ' + String(appsRes.reason))
       else if (appsRes.status === 'fulfilled') errs.push('Apps: ' + (appsRes.value.error ?? 'unknown error'))
@@ -342,139 +472,29 @@ export default function Dashboard() {
 
     // ── Devices ───────────────────────────────────────────────────────────────
     if (devicesRes.status === 'fulfilled' && devicesRes.value.success) {
-      const devs = devicesRes.value.devices as DeviceItem[]
-      setDeviceSummary({
-        total: devs.length,
-        compliant: devs.filter(d => d.complianceState === 'compliant').length,
-        nonCompliant: devs.filter(d => d.complianceState === 'noncompliant').length,
-        inGracePeriod: devs.filter(d => d.complianceState === 'inGracePeriod').length,
-        needsAttention: devs.filter(d => d.needsAttention).length,
-        windowsUpdateNeeded: devs.filter(d => d.windowsUpdateStatus === 'needsUpdate').length,
-        driverUpdateNeeded: devs.filter(d => d.driverUpdateStatus === 'needsUpdate').length,
-      })
-
-      // OS distribution (client-side aggregation)
-      const buckets = new Map<string, number>()
-      for (const d of devs) {
-        const bucket = parseOsBucket(d.osVersion)
-        buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1)
-      }
-      setOsDistribution(
-        Array.from(buckets.entries())
-          .map(([version, count]) => ({ version, count }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 8)
-      )
-
-      // Enrollment type distribution
-      const etBuckets = new Map<string, number>()
-      for (const d of devs) {
-        const et = d.deviceEnrollmentType || 'unknown'
-        const label = ENROLLMENT_TYPE_LABELS[et] ?? et
-        etBuckets.set(label, (etBuckets.get(label) ?? 0) + 1)
-      }
-      setEnrollmentTypes(
-        Array.from(etBuckets.entries())
-          .map(([name, value]) => ({ name, value }))
-          .sort((a, b) => b.value - a.value)
-      )
-
-      // Security posture
-      const rtpOff = devs.filter(d => d.realTimeProtectionEnabled === false).length
-      const malwareOff = devs.filter(d => d.malwareProtectionEnabled === false).length
-      const sigOverdue = devs.filter(d => d.signatureUpdateOverdue).length
-      const scanOverdue = devs.filter(d => d.quickScanOverdue).length
-      const reboot = devs.filter(d => d.rebootRequired).length
-      const attn = devs.filter(d =>
-        d.realTimeProtectionEnabled === false || d.signatureUpdateOverdue || d.quickScanOverdue || d.rebootRequired
-      ).slice(0, 10)
-      setSecuritySummary({ rtpDisabled: rtpOff, malwareDisabled: malwareOff, signatureOverdue: sigOverdue, scanOverdue, rebootPending: reboot, attentionDevices: attn })
+      applyDevicesResult(devicesRes.value)
     } else {
       if (devicesRes.status === 'rejected') errs.push('Devices: ' + String(devicesRes.reason))
       else if (devicesRes.status === 'fulfilled') errs.push('Devices: ' + (devicesRes.value.error ?? 'unknown error'))
     }
 
-    // ── App install stats ─────────────────────────────────────────────────────
-    if (installRes.status === 'fulfilled') {
-      if (installRes.value.permissionError) {
-        setAppInstallPermErr(true)
-      } else if (installRes.value.success) {
-        setAppInstallPermErr(false)
-        const sorted = [...(installRes.value.apps ?? [])].sort((a, b) => b.failed - a.failed)
-        setAppInstallStats(sorted)
-        setAppInstallTruncated(installRes.value.truncated ?? false)
-      }
-    }
+    // ── App install / Update / UEA / Autopilot ────────────────────────────────
+    if (installRes.status === 'fulfilled') applyInstallResult(installRes.value)
+    if (updateRes.status === 'fulfilled') applyUpdateResult(updateRes.value)
+    if (ueaRes.status === 'fulfilled') applyUEAResult(ueaRes.value)
+    if (autopilotRes.status === 'fulfilled') applyAutopilotResult(autopilotRes.value)
 
-    // ── Windows Update states ─────────────────────────────────────────────────
-    if (updateRes.status === 'fulfilled') {
-      if (updateRes.value.permissionError) {
-        setUpdatePermErr(true)
-      } else if (updateRes.value.success) {
-        setUpdatePermErr(false)
-        setUpdateSummary(updateRes.value.summary as unknown as Record<string, number>)
-
-        // Group by featureUpdateVersion for stacked bar
-        const versionMap = new Map<string, { completed: number; pending: number; failed: number; notStarted: number; inProgress: number }>()
-        for (const s of updateRes.value.states ?? []) {
-          const ver = s.featureUpdateVersion || 'Unknown'
-          if (!versionMap.has(ver)) versionMap.set(ver, { completed: 0, pending: 0, failed: 0, notStarted: 0, inProgress: 0 })
-          const entry = versionMap.get(ver)!
-          const st = s.status as keyof typeof entry
-          if (st in entry) entry[st]++
-        }
-        setUpdateVersions(
-          Array.from(versionMap.entries())
-            .map(([version, counts]) => ({ version, ...counts }))
-            .sort((a, b) => b.completed - a.completed)
-            .slice(0, 8)
-        )
-      }
-    }
-
-    // ── UEA scores ────────────────────────────────────────────────────────────
-    if (ueaRes.status === 'fulfilled') {
-      if (ueaRes.value.permissionError) {
-        setUeaPermErr(true)
-      } else if (ueaRes.value.success) {
-        setUeaPermErr(false)
-        setUeaOverview(ueaRes.value.overview as typeof ueaOverview)
-        setUeaAppHealth(ueaRes.value.appHealth ?? [])
-      }
-    }
-
-    // ── Autopilot events ──────────────────────────────────────────────────────
-    if (autopilotRes.status === 'fulfilled') {
-      if (autopilotRes.value.permissionError) {
-        setAutopilotPermErr(true)
-      } else if (autopilotRes.value.success) {
-        setAutopilotPermErr(false)
-        const events = autopilotRes.value.events as AutopilotEvent[]
-        // Build daily trend for last 30 days
-        const trend = new Map<string, { success: number; failed: number }>()
-        const now = Date.now()
-        for (let i = 29; i >= 0; i--) {
-          const d = new Date(now - i * 86400000)
-          const key = d.toISOString().slice(0, 10)
-          trend.set(key, { success: 0, failed: 0 })
-        }
-        for (const ev of events) {
-          if (!ev.deviceRegisteredDateTime) continue
-          const key = ev.deviceRegisteredDateTime.slice(0, 10)
-          if (!trend.has(key)) continue
-          const entry = trend.get(key)!
-          if (ev.enrollmentState === 'enrolled') entry.success++
-          else entry.failed++
-        }
-        setEnrollmentTrend(
-          Array.from(trend.entries()).map(([date, v]) => ({ date: date.slice(5), ...v }))
-        )
-      }
+    // ── Detect cache hits → background refreshes now in-flight ───────────────
+    const cacheHits = [appsRes, devicesRes, installRes, updateRes, ueaRes, autopilotRes]
+      .filter(r => r.status === 'fulfilled' && (r.value as unknown as Record<string, unknown>).fromCache === true).length
+    if (cacheHits > 0) {
+      pendingCacheRefreshes.current = cacheHits
+      setBackgroundRefreshing(true)
     }
 
     setErrors(errs)
     setLastRefresh(new Date())
-  }, [])
+  }, [applyAppsResult, applyDevicesResult, applyInstallResult, applyUpdateResult, applyUEAResult, applyAutopilotResult])
 
   useEffect(() => {
     if (tenantChecked && tenant.isConnected) fetchSummary()
@@ -486,6 +506,23 @@ export default function Dashboard() {
     const interval = setInterval(fetchSummary, 60_000)
     return () => clearInterval(interval)
   }, [tenant.isConnected, fetchSummary])
+
+  // Subscribe to background cache refresh events
+  useEffect(() => {
+    const decrement = () => {
+      pendingCacheRefreshes.current = Math.max(0, pendingCacheRefreshes.current - 1)
+      if (pendingCacheRefreshes.current === 0) setBackgroundRefreshing(false)
+    }
+    const unsubs = [
+      onCacheAppsUpdated(data => { if (data.success) applyAppsResult(data); decrement() }),
+      onCacheDevicesUpdated(data => { if (data.success) applyDevicesResult(data); decrement() }),
+      onCacheInstallStatsUpdated(data => { applyInstallResult(data); decrement() }),
+      onCacheUpdateStatesUpdated(data => { applyUpdateResult(data); decrement() }),
+      onCacheUEAScoresUpdated(data => { applyUEAResult(data); decrement() }),
+      onCacheAutopilotEventsUpdated(data => { applyAutopilotResult(data); decrement() }),
+    ]
+    return () => unsubs.forEach(fn => fn())
+  }, [applyAppsResult, applyDevicesResult, applyInstallResult, applyUpdateResult, applyUEAResult, applyAutopilotResult])
 
   const handleLogout = async () => {
     await logout()
@@ -558,7 +595,10 @@ export default function Dashboard() {
         </div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {lastRefresh && (
+          {backgroundRefreshing && (
+            <span style={{ fontSize: 11, color: 'var(--text-500)' }}>↻ Refreshing...</span>
+          )}
+          {!backgroundRefreshing && lastRefresh && (
             <span style={{ fontSize: 11, color: 'var(--text-500)' }}>Updated {lastRefresh.toLocaleTimeString()}</span>
           )}
           <button className="btn-secondary" style={{ fontSize: 12, padding: '5px 10px' }} onClick={() => fetchSummary()} disabled={loading || !tenant.isConnected}>

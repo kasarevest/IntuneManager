@@ -91,6 +91,22 @@ function runPsScript(
   })
 }
 
+// ─── DB cache helpers ─────────────────────────────────────────────────────────
+
+function getCached(db: Database, key: string): Record<string, unknown> | null {
+  try {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
+    if (!row?.value) return null
+    return JSON.parse(row.value) as Record<string, unknown>
+  } catch { return null }
+}
+
+function saveCache(db: Database, key: string, data: Record<string, unknown>): void {
+  try {
+    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(data))
+  } catch { /* non-fatal */ }
+}
+
 // ─── IPC Registration ─────────────────────────────────────────────────────────
 
 export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void {
@@ -144,8 +160,23 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
 
   // Get Intune apps
   ipcMain.handle('ipc:ps:get-intune-apps', async () => {
+    const cacheKey = 'cache_db_apps'
+    const cached = getCached(db, cacheKey)
+    if (cached) {
+      setImmediate(async () => {
+        try {
+          const r = await runPsScript('Get-IntuneApps.ps1', [])
+          const fresh = r.result ?? { success: false, error: 'No result from PS script' }
+          if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+          sendToRenderer('ipc:cache:apps-updated', fresh)
+        } catch (e) { sendToRenderer('ipc:cache:apps-updated', { success: false, error: String(e) }) }
+      })
+      return { ...cached, fromCache: true }
+    }
     const result = await runPsScript('Get-IntuneApps.ps1', [])
-    return result.result ?? { success: false, error: 'No result from PS script' }
+    const data = result.result ?? { success: false, error: 'No result from PS script' }
+    if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+    return data
   })
 
   // Search winget
@@ -249,8 +280,23 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
 
   // Get all managed devices from Intune
   ipcMain.handle('ipc:ps:get-devices', async () => {
+    const cacheKey = 'cache_db_devices'
+    const cached = getCached(db, cacheKey)
+    if (cached) {
+      setImmediate(async () => {
+        try {
+          const r = await runPsScript('Get-IntuneDevices.ps1', [])
+          const fresh = r.result ?? { success: false, devices: [], error: 'No result from PS script' }
+          if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+          sendToRenderer('ipc:cache:devices-updated', fresh)
+        } catch (e) { sendToRenderer('ipc:cache:devices-updated', { success: false, devices: [], error: String(e) }) }
+      })
+      return { ...cached, fromCache: true }
+    }
     const result = await runPsScript('Get-IntuneDevices.ps1', [])
-    return result.result ?? { success: false, devices: [], error: 'No result from PS script' }
+    const data = result.result ?? { success: false, devices: [], error: 'No result from PS script' }
+    if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+    return data
   })
 
   // Trigger Windows Update sync on a device
@@ -289,26 +335,86 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
 
   // App install health (per-app success/failure rates from installSummary)
   ipcMain.handle('ipc:ps:get-app-install-stats', async () => {
+    const cacheKey = 'cache_db_install_stats'
+    const cached = getCached(db, cacheKey)
+    if (cached) {
+      setImmediate(async () => {
+        try {
+          const r = await runPsScript('Get-AppInstallStats.ps1', [])
+          const fresh = r.result ?? { success: false, apps: [], error: 'No result from PS script' }
+          if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+          sendToRenderer('ipc:cache:install-stats-updated', fresh)
+        } catch (e) { sendToRenderer('ipc:cache:install-stats-updated', { success: false, apps: [], error: String(e) }) }
+      })
+      return { ...cached, fromCache: true }
+    }
     const result = await runPsScript('Get-AppInstallStats.ps1', [])
-    return result.result ?? { success: false, apps: [], error: 'No result from PS script' }
+    const data = result.result ?? { success: false, apps: [], error: 'No result from PS script' }
+    if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+    return data
   })
 
   // Windows Update states (beta endpoint — featureUpdateVersion + status per device)
   ipcMain.handle('ipc:ps:get-update-states', async () => {
+    const cacheKey = 'cache_db_update_states'
+    const cached = getCached(db, cacheKey)
+    if (cached) {
+      setImmediate(async () => {
+        try {
+          const r = await runPsScript('Get-UpdateStates.ps1', [])
+          const fresh = r.result ?? { success: false, summary: {}, states: [], error: 'No result from PS script' }
+          if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+          sendToRenderer('ipc:cache:update-states-updated', fresh)
+        } catch (e) { sendToRenderer('ipc:cache:update-states-updated', { success: false, summary: {}, states: [], error: String(e) }) }
+      })
+      return { ...cached, fromCache: true }
+    }
     const result = await runPsScript('Get-UpdateStates.ps1', [])
-    return result.result ?? { success: false, summary: {}, states: [], error: 'No result from PS script' }
+    const data = result.result ?? { success: false, summary: {}, states: [], error: 'No result from PS script' }
+    if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+    return data
   })
 
   // User Experience Analytics scores (requires UserExperienceAnalytics.Read.All)
   ipcMain.handle('ipc:ps:get-uea-scores', async () => {
+    const cacheKey = 'cache_db_uea_scores'
+    const cached = getCached(db, cacheKey)
+    if (cached) {
+      setImmediate(async () => {
+        try {
+          const r = await runPsScript('Get-UEAScores.ps1', [])
+          const fresh = r.result ?? { success: false, overview: null, appHealth: [], error: 'No result from PS script' }
+          if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+          sendToRenderer('ipc:cache:uea-scores-updated', fresh)
+        } catch (e) { sendToRenderer('ipc:cache:uea-scores-updated', { success: false, overview: null, appHealth: [], error: String(e) }) }
+      })
+      return { ...cached, fromCache: true }
+    }
     const result = await runPsScript('Get-UEAScores.ps1', [])
-    return result.result ?? { success: false, overview: null, appHealth: [], error: 'No result from PS script' }
+    const data = result.result ?? { success: false, overview: null, appHealth: [], error: 'No result from PS script' }
+    if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+    return data
   })
 
   // Autopilot enrollment events (requires DeviceManagementServiceConfig.ReadWrite.All)
   ipcMain.handle('ipc:ps:get-autopilot-events', async () => {
+    const cacheKey = 'cache_db_autopilot_events'
+    const cached = getCached(db, cacheKey)
+    if (cached) {
+      setImmediate(async () => {
+        try {
+          const r = await runPsScript('Get-AutopilotEvents.ps1', [])
+          const fresh = r.result ?? { success: false, events: [], error: 'No result from PS script' }
+          if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+          sendToRenderer('ipc:cache:autopilot-events-updated', fresh)
+        } catch (e) { sendToRenderer('ipc:cache:autopilot-events-updated', { success: false, events: [], error: String(e) }) }
+      })
+      return { ...cached, fromCache: true }
+    }
     const result = await runPsScript('Get-AutopilotEvents.ps1', [])
-    return result.result ?? { success: false, events: [], error: 'No result from PS script' }
+    const data = result.result ?? { success: false, events: [], error: 'No result from PS script' }
+    if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+    return data
   })
 
   // AWS SSO login — launches `aws sso login` for Bedrock access

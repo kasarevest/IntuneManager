@@ -4,6 +4,7 @@ import type {
   CreateUserReq, ChangePasswordReq,
   SaveSettingsReq,
   ConnectTenantRes, AuthStatusRes,
+  IntuneAppsRes,
   DeployAppReq, DeployAppRes,
   PackageOnlyReq, PackageOnlyRes,
   UploadOnlyReq, UploadOnlyRes,
@@ -101,8 +102,8 @@ export const ipcPsConnectTenant = (useDeviceCode: boolean): Promise<ConnectTenan
 export const ipcPsDisconnectTenant = (): Promise<{ success: boolean }> =>
   api.invoke('ipc:ps:disconnect-tenant') as Promise<{ success: boolean }>
 
-export const ipcPsGetIntuneApps = (): Promise<{ success: boolean; apps?: unknown[]; error?: string }> =>
-  api.invoke('ipc:ps:get-intune-apps') as Promise<{ success: boolean; apps?: unknown[]; error?: string }>
+export const ipcPsGetIntuneApps = (): Promise<IntuneAppsRes> =>
+  api.invoke('ipc:ps:get-intune-apps') as Promise<IntuneAppsRes>
 
 export const ipcPsGetPackageSettings = (appName: string, sourceRootPath?: string): Promise<{ success: boolean; version?: string; wingetId?: string; sourceFolder?: string; error?: string }> =>
   api.invoke('ipc:ps:get-package-settings', { appName, sourceRootPath }) as Promise<{ success: boolean; version?: string; wingetId?: string; sourceFolder?: string; error?: string }>
@@ -176,3 +177,22 @@ export const onJobError = (callback: (data: { jobId: string; error: string; phas
 
 export const onJobPackageComplete = (callback: (data: { jobId: string; intunewinPath: string | null; packageSettings: Record<string, unknown> | null }) => void): (() => void) =>
   api.on('job:package-complete', callback as (data: unknown) => void)
+
+// --- Cache update events (background refresh notifications) ---
+export const onCacheAppsUpdated = (cb: (data: IntuneAppsRes) => void): (() => void) =>
+  api.on('ipc:cache:apps-updated', cb as (data: unknown) => void)
+
+export const onCacheDevicesUpdated = (cb: (data: GetDevicesRes) => void): (() => void) =>
+  api.on('ipc:cache:devices-updated', cb as (data: unknown) => void)
+
+export const onCacheInstallStatsUpdated = (cb: (data: AppInstallStatsRes) => void): (() => void) =>
+  api.on('ipc:cache:install-stats-updated', cb as (data: unknown) => void)
+
+export const onCacheUpdateStatesUpdated = (cb: (data: UpdateStatesRes) => void): (() => void) =>
+  api.on('ipc:cache:update-states-updated', cb as (data: unknown) => void)
+
+export const onCacheUEAScoresUpdated = (cb: (data: UEAScoresRes) => void): (() => void) =>
+  api.on('ipc:cache:uea-scores-updated', cb as (data: unknown) => void)
+
+export const onCacheAutopilotEventsUpdated = (cb: (data: AutopilotEventsRes) => void): (() => void) =>
+  api.on('ipc:cache:autopilot-events-updated', cb as (data: unknown) => void)

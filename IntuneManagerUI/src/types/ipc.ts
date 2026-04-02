@@ -27,7 +27,7 @@ export interface AwsSsoLoginRes {
 // PS Bridge
 export interface ConnectTenantRes { success: boolean; username?: string; tenantId?: string; tokenExpiry?: string; error?: string }
 export interface AuthStatusRes { isConnected: boolean; username?: string; tenantId?: string; expiresInMinutes?: number }
-export interface IntuneAppsRes { success: boolean; apps?: unknown[]; error?: string }
+export interface IntuneAppsRes { success: boolean; apps?: unknown[]; error?: string; fromCache?: boolean }
 export interface SearchRes { success: boolean; results: unknown[] }
 export interface DownloadRes { success: boolean; path?: string; sizeMB?: number; sha256?: string; error?: string }
 export interface BuildRes { success: boolean; intunewinPath?: string; error?: string }
@@ -118,6 +118,7 @@ export interface AppInstallStatsRes {
   truncated?: boolean
   permissionError?: boolean
   error?: string
+  fromCache?: boolean
 }
 
 // Windows Update states
@@ -141,6 +142,7 @@ export interface UpdateStatesRes {
   states: UpdateStateDevice[]
   permissionError?: boolean
   error?: string
+  fromCache?: boolean
 }
 
 // UEA scores
@@ -163,6 +165,7 @@ export interface UEAScoresRes {
   appHealth: UEAAppHealth[]
   permissionError?: boolean
   error?: string
+  fromCache?: boolean
 }
 
 // Autopilot events
@@ -177,12 +180,14 @@ export interface AutopilotEventsRes {
   events: AutopilotEvent[]
   permissionError?: boolean
   error?: string
+  fromCache?: boolean
 }
 
 export interface GetDevicesRes {
   success: boolean
   devices: DeviceItem[]
   error?: string
+  fromCache?: boolean
 }
 
 export interface TriggerDeviceActionRes {

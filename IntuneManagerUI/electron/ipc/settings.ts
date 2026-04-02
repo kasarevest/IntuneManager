@@ -70,7 +70,7 @@ export function registerSettingsHandlers(db: Database): void {
 
   ipcMain.handle('ipc:settings:clear-ai-cache', () => {
     try {
-      db.prepare("DELETE FROM app_settings WHERE key = 'recommendations_cache'").run()
+      db.prepare("DELETE FROM app_settings WHERE key = 'recommendations_cache' OR key LIKE 'cache_db_%'").run()
       return { success: true }
     } catch (err) {
       return { success: false, error: (err as Error).message }
