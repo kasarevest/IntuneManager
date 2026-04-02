@@ -31,8 +31,8 @@ export default function GeneralTab() {
           claudeApiKey: res.claudeApiKey ?? '',
           defaultMinOs: res.defaultMinOs ?? 'W10_21H2',
           logRetentionDays: res.logRetentionDays ?? 30,
-          awsRegion: res.awsRegion ?? '',
-          awsBedrockModelId: res.awsBedrockModelId ?? ''
+          awsRegion: res.awsRegion || 'us-east-1',
+          awsBedrockModelId: res.awsBedrockModelId || 'us.anthropic.claude-3-5-sonnet-20241022-v2:0'
         })
         setClaudeApiKeyConfigured(res.claudeApiKeyConfigured ?? false)
       }
@@ -247,7 +247,7 @@ export default function GeneralTab() {
               <input
                 value={settings.awsBedrockModelId}
                 onChange={e => f('awsBedrockModelId', e.target.value)}
-                placeholder="anthropic.claude-sonnet-4-5-v1:0"
+                placeholder="us.anthropic.claude-3-5-sonnet-20241022-v2:0"
               />
               <p style={{ fontSize: 11, color: 'var(--text-500)', marginTop: 4 }}>
                 Must be a Claude model available in your Bedrock account.
