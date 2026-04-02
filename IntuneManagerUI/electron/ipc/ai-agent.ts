@@ -24,9 +24,9 @@ function createClient(db: Database): ClientBundle {
   }
 
   const awsRegion = getRow('aws_region')
-  const bedrockModelId = getRow('aws_bedrock_model_id') || 'us.anthropic.claude-sonnet-4-6-20251001-v1:0'
+  const bedrockModelId = getRow('aws_bedrock_model_id')
 
-  if (awsRegion) {
+  if (awsRegion && bedrockModelId) {
     // Bedrock client — picks up AWS SSO credentials automatically from the credential chain
     return {
       client: new AnthropicBedrock({ awsRegion }),
@@ -44,12 +44,17 @@ function createClient(db: Database): ClientBundle {
 }
 
 function assertClientConfigured(db: Database): ClientBundle {
-  const bundle = createClient(db)
   const getRow = (key: string) => {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
     return row?.value ?? ''
   }
   const awsRegion = getRow('aws_region')
+  const bedrockModelId = getRow('aws_bedrock_model_id')
+
+  if (awsRegion && !bedrockModelId) {
+    throw new Error('Bedrock Model ID is required. Go to Settings → General and enter the Bedrock Model ID (e.g. anthropic.claude-3-5-sonnet-20241022-v2:0).')
+  }
+
   if (!awsRegion) {
     // Bedrock not configured — check direct API key
     const apiKeyRow = db.prepare("SELECT value FROM app_settings WHERE key = 'claude_api_key_encrypted'").get() as { value: string } | undefined
@@ -58,7 +63,7 @@ function assertClientConfigured(db: Database): ClientBundle {
       throw new Error('No Claude connection configured. Go to Settings → General and configure AWS Bedrock (SSO) or an Anthropic API key.')
     }
   }
-  return bundle
+  return createClient(db)
 }
 
 interface ActiveJob {
@@ -544,7 +549,11 @@ Respond ONLY with a JSON array. No markdown, no explanation.`,
           // Notify renderer with refreshed results
           event.sender.send('ipc:ai:recommendations-updated', { recommendations: fresh })
         }
-      } catch { /* background refresh failure is silent — cached data still shown */ }
+      } catch (refreshErr) {
+        console.error('[AI] Background recommendation refresh failed:', (refreshErr as Error).message)
+        // Notify renderer of refresh error so it can show a warning without clearing cached data
+        event.sender.send('ipc:ai:recommendations-updated', { recommendations: null, error: (refreshErr as Error).message })
+      }
     }
 
     if (cachedRecommendations && cachedRecommendations.length > 0) {
@@ -631,6 +640,7 @@ async function runDeployJob(
   }
 
   const { client, model } = assertClientConfigured(db)
+  const isBedrockClient = client instanceof AnthropicBedrock
 
   // Get configured paths — injected into the system prompt so Claude knows where to write files
   const getSettingRow = (key: string, fallback: string) => {
@@ -654,6 +664,7 @@ async function runDeployJob(
   setPhase('analyzing')
   log(`Starting deployment: "${req.userRequest}"`)
   if (req.isUpdate && req.existingAppId) log(`Update mode — existing app ID: ${req.existingAppId}`)
+  log(`AI connection: ${isBedrockClient ? `AWS Bedrock (${model})` : `Direct API (${model})`}`)
   log(`Source root: ${sourceRoot}`)
   log(`Output folder: ${outputFolder}`)
 
@@ -842,6 +853,7 @@ async function runPackageOnlyJob(
   }
 
   const { client, model } = assertClientConfigured(db)
+  const isBedrockClient = client instanceof AnthropicBedrock
 
   const getSettingRow = (key: string, fallback: string) => {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
@@ -861,6 +873,7 @@ async function runPackageOnlyJob(
 
   setPhase('analyzing')
   log(`Starting packaging: "${req.userRequest}"`)
+  log(`AI connection: ${isBedrockClient ? `AWS Bedrock (${model})` : `Direct API (${model})`}`)
   log(`Source root: ${sourceRoot}`)
   log(`Output folder: ${outputFolder}`)
 
