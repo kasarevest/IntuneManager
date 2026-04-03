@@ -2090,3 +2090,118 @@ The build script ran `tsc` (no `--noEmit`, no `outDir`), causing TypeScript to e
 
 ---
 
+
+---
+
+# Task: Phase 1 — Azure Migration: Express API Server
+**Date:** 2026-04-03 | **Branch:** dev
+
+## Pre-Flight Plan
+
+### Objective
+Replace Electron's IPC layer with a standalone Express.js REST API server so the React frontend runs in a standard browser (no Electron). This is the foundation for all subsequent Azure phases.
+
+### Lessons Consulted
+- **Lesson 001:** Enhanced Workflow mandatory.
+- **Lesson 009:** DB cache stale-while-revalidate pattern — preserve this in the SSE cache update design.
+
+### Scope (Phase 1 only)
+- Keep SQLite (Phase 2 replaces it with Azure SQL)
+- Keep `spawn('powershell.exe')` locally (Phase 4 moves PS to Azure)
+- Replace MachineGuid encryption with env-var-based key (Key Vault is Phase 3)
+- Dialog file pickers → plain text inputs (no native OS dialogs in browser)
+
+### Risk Assessment
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| SSE connections drop mid-job | Medium | High | Client auto-reconnect with `lastEventId`; server replays last N events from in-memory ring buffer |
+| Multiple concurrent PS jobs share one SQLite connection | Medium | Medium | better-sqlite3 is sync — queue PS calls or use WAL mode |
+| Vite proxy drops SSE keep-alive | Medium | Medium | Set `changeOrigin: true`, test with long-running job |
+| JWT secret missing on cold start | Low | High | Validate `APP_SECRET_KEY` env var at startup; exit(1) if absent |
+| `ai-agent.ts` imports Electron types | High | High | Extract into shared service with zero Electron imports |
+| CORS blocks browser fetch in dev | Medium | Low | Add CORS middleware before routes |
+
+### Implementation Checklist
+
+#### Step 1 — Server scaffold
+- [ ] Create `IntuneManagerUI/server/` directory structure
+- [ ] Add `server/package.json` (Express, cors, jsonwebtoken, better-sqlite3, dotenv)
+- [ ] Add `server/tsconfig.json`
+- [ ] Create `server/index.ts` — Express app, DB init, register routes, start on port 3001
+- [ ] Create `server/db.ts` — extract DB init/migrations from `electron/main.ts`
+- [ ] Create `server/sse.ts` — SSE manager replacing `win.webContents.send()`
+- [ ] Create `server/middleware/auth.ts` — JWT validation middleware
+
+#### Step 2 — Auth routes (`/api/auth/*`)
+- [ ] Port all handlers from `electron/ipc/auth.ts` → `server/routes/auth.ts`
+- [ ] Replace UUID session tokens with JWTs (jsonwebtoken, 8hr expiry)
+- [ ] Keep bcrypt logic unchanged
+
+#### Step 3 — Settings routes (`/api/settings/*`)
+- [ ] Port handlers from `electron/ipc/settings.ts` → `server/routes/settings.ts`
+- [ ] Replace MachineGuid AES key with `process.env.APP_SECRET_KEY`
+- [ ] Remove dialog handlers (file picker → N/A for web)
+
+#### Step 4 — PS Bridge routes (`/api/ps/*`)
+- [ ] Extract `runPsScript()` into `server/services/ps-bridge.ts`
+- [ ] Port all IPC handlers → `server/routes/ps.ts`
+- [ ] Replace `sendToRenderer(channel, data)` with `sseManager.broadcast(channel, data)`
+- [ ] Replace `setImmediate` cache refresh → same pattern, push update via SSE
+
+#### Step 5 — AI Agent routes (`/api/ai/*`)
+- [ ] Extract AI agent logic into `server/services/ai-agent.ts` (remove all Electron imports)
+- [ ] Port `ipc:ai:deploy-app`, `ipc:ai:package-only`, `ipc:ai:upload-only`, `ipc:ai:cancel`
+- [ ] Replace `win.webContents.send('job:log', ...)` with `sseManager.send(jobId, ...)`
+- [ ] SSE endpoint: `GET /api/jobs/stream` (all events) — client filters by jobId
+
+#### Step 6 — Frontend: replace ipc.ts
+- [ ] Create `src/lib/api.ts` — all functions use `fetch('/api/...')` instead of `api.invoke()`
+- [ ] Create `src/lib/sse.ts` — `EventSource` subscriptions replacing `api.on()`
+- [ ] Update all import sites: `from './lib/ipc'` → `from './lib/api'` / `from './lib/sse'`
+
+#### Step 7 — Vite config
+- [ ] Add `server.proxy` to forward `/api` → `http://localhost:3001`
+- [ ] Remove `vite-plugin-electron` and `vite-plugin-electron-renderer` from Vite config
+- [ ] Add `dev:web` script to package.json that starts both Vite and Express server
+
+#### Step 8 — Verification
+- [ ] `npx tsc --noEmit` on server → 0 errors
+- [ ] `npx tsc --noEmit` on frontend → 0 errors
+- [ ] Login page loads in Chrome
+- [ ] Dashboard loads with real Intune data
+- [ ] Deploy job streams logs in real time via SSE
+- [ ] Electron path still works (`electron:dev` script unchanged)
+
+### Exit Criterion
+Full UI works in Chrome at `http://localhost:5173` with no Electron process running.
+
+## In-Flight Log
+
+### ✅ Step 1 — Server scaffold
+Created `server/` with Express + TypeScript. 14 files: index.ts, db.ts, sse.ts, middleware/auth.ts, services/ps-bridge.ts, services/encryption.ts, routes/auth.ts, routes/settings.ts, routes/ps.ts, routes/ai.ts, routes/events.ts, plus package.json, tsconfig.json, .env.example.
+- `npm install` → clean (0 vulnerabilities in server deps)
+- `tsc --noEmit` → Exit 0
+
+### ✅ Step 2 — Auth routes
+Ported all 9 auth handlers. UUID session tokens → JWTs (jsonwebtoken, 8hr). bcrypt logic unchanged.
+
+### ✅ Step 3 — Settings routes
+Ported all handlers. MachineGuid key → `process.env.APP_SECRET_KEY`. Dialog handlers omitted.
+
+### ✅ Step 4 — PS Bridge routes
+Ported all 21 PS handlers. `sendToRenderer()` → `sseManager.broadcast()`.
+
+### ✅ Step 5 — AI Agent routes
+Ported with all script generators and job runners verbatim. Zero Electron imports.
+
+### ✅ Step 6 — Frontend: replace ipc.ts
+Created `src/lib/api.ts` (fetch-based) and `src/lib/sse.ts` (EventSource-based).
+Updated all 14 import sites across pages, hooks, contexts.
+- `tsc --noEmit` → Exit 0
+- 0 remaining `from '../lib/ipc'` imports
+
+### ✅ Step 7 — Vite config
+Created `vite.web.config.ts` with proxy to port 3001 and no Electron plugins.
+Added `dev:web` and `build:web` scripts to package.json.
+
+### ⬜ Step 8 — End-to-end verification (requires Windows with PowerShell)

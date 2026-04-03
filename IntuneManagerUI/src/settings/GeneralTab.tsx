@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import type { AppSettings } from '../types/app'
-import { ipcSettingsGet, ipcSettingsSave, ipcDialogOpenFile, ipcDialogOpenFolder, ipcAwsSsoLogin, ipcSettingsClearAiCache } from '../lib/ipc'
+import { ipcSettingsGet, ipcSettingsSave, ipcDialogOpenFile, ipcDialogOpenFolder, ipcAwsSsoLogin, ipcSettingsClearAiCache } from '../lib/api'
 
 export default function GeneralTab() {
   const [settings, setSettings] = useState<AppSettings>({

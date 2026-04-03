@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ipcAuthGetGeneratedPassword, ipcAuthFirstRunComplete } from '../lib/ipc'
+import { ipcAuthGetGeneratedPassword, ipcAuthFirstRunComplete } from '../lib/api'
 
 export default function FirstRun() {
   const navigate = useNavigate()

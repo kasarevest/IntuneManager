@@ -5,7 +5,7 @@ import {
   ipcAuthCreateUser,
   ipcAuthDeleteUser,
   ipcAuthChangePassword
-} from '../lib/ipc'
+} from '../lib/api'
 
 interface UserRow {
   id: number

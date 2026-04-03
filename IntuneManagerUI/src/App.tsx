@@ -9,7 +9,7 @@ import {
 } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { TenantProvider } from './contexts/TenantContext'
-import { ipcAuthFirstRunCheck } from './lib/ipc'
+import { ipcAuthFirstRunCheck } from './lib/api'
 
 import Login from './pages/Login'
 import FirstRun from './pages/FirstRun'

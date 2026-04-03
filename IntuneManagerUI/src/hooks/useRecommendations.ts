@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { ipcAiGetRecommendations } from '../lib/ipc'
+import { ipcAiGetRecommendations } from '../lib/api'
 import type { AppRecommendation } from '../types/ipc'
 
 // Module-level in-memory cache — survives page remounts within the same session.

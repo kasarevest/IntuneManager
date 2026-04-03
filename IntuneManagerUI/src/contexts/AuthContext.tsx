@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import type { User } from '../types/app'
-import { ipcAuthValidateSession, ipcAuthLogin, ipcAuthLogout } from '../lib/ipc'
+import { ipcAuthValidateSession, ipcAuthLogin, ipcAuthLogout } from '../lib/api'
 
 interface AuthState {
   user: User | null

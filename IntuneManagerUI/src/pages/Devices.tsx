@@ -6,7 +6,7 @@ import {
   ipcPsTriggerWindowsUpdate,
   ipcPsTriggerDriverUpdate,
   ipcPsDownloadDiagnostics
-} from '../lib/ipc'
+} from '../lib/api'
 import type { DeviceItem } from '../types/ipc'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

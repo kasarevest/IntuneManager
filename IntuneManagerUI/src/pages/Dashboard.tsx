@@ -11,9 +11,11 @@ import {
   ipcPsGetIntuneApps, ipcPsGetDevices,
   ipcPsGetAppInstallStats, ipcPsGetUpdateStates,
   ipcPsGetUEAScores, ipcPsGetAutopilotEvents,
+} from '../lib/api'
+import {
   onCacheAppsUpdated, onCacheDevicesUpdated, onCacheInstallStatsUpdated,
   onCacheUpdateStatesUpdated, onCacheUEAScoresUpdated, onCacheAutopilotEventsUpdated,
-} from '../lib/ipc'
+} from '../lib/sse'
 import type {
   DeviceItem, AppInstallStat, AutopilotEvent,
   IntuneAppsRes, GetDevicesRes, AppInstallStatsRes, UpdateStatesRes, UEAScoresRes, AutopilotEventsRes,

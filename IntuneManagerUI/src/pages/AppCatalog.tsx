@@ -4,7 +4,7 @@ import { useTenant } from '../contexts/TenantContext'
 import { useRecommendations } from '../hooks/useRecommendations'
 import AppCard from '../components/AppCard'
 import type { AppRecommendation } from '../types/ipc'
-import { ipcPsSearchWinget } from '../lib/ipc'
+import { ipcPsSearchWinget } from '../lib/api'
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
