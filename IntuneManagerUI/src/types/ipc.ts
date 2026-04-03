@@ -15,12 +15,19 @@ export interface SaveSettingsReq {
   claudeApiKey?: string
   defaultMinOs?: string
   logRetentionDays?: number
+  awsRegion?: string
+  awsBedrockModelId?: string
+}
+
+export interface AwsSsoLoginRes {
+  success: boolean
+  error?: string
 }
 
 // PS Bridge
 export interface ConnectTenantRes { success: boolean; username?: string; tenantId?: string; tokenExpiry?: string; error?: string }
 export interface AuthStatusRes { isConnected: boolean; username?: string; tenantId?: string; expiresInMinutes?: number }
-export interface IntuneAppsRes { success: boolean; apps?: unknown[]; error?: string }
+export interface IntuneAppsRes { success: boolean; apps?: unknown[]; error?: string; fromCache?: boolean }
 export interface SearchRes { success: boolean; results: unknown[] }
 export interface DownloadRes { success: boolean; path?: string; sizeMB?: number; sha256?: string; error?: string }
 export interface BuildRes { success: boolean; intunewinPath?: string; error?: string }
@@ -85,12 +92,102 @@ export interface DeviceItem {
   driverUpdateStatus: 'updated' | 'needsUpdate' | 'unknown'
   hasDiagnostics: boolean
   needsAttention: boolean
+  // Dashboard v2 additions
+  deviceEnrollmentType: string
+  joinType: string
+  malwareProtectionEnabled: boolean
+  realTimeProtectionEnabled: boolean
+  signatureUpdateOverdue: boolean
+  quickScanOverdue: boolean
+  rebootRequired: boolean
+}
+
+// App install health
+export interface AppInstallStat {
+  id: string
+  displayName: string
+  installed: number
+  failed: number
+  pending: number
+  notApplicable: number
+  successPercent: number
+}
+export interface AppInstallStatsRes {
+  success: boolean
+  apps: AppInstallStat[]
+  truncated?: boolean
+  permissionError?: boolean
+  error?: string
+  fromCache?: boolean
+}
+
+// Windows Update states
+export interface UpdateStateSummary {
+  notStarted: number
+  pending: number
+  inProgress: number
+  completed: number
+  failed: number
+}
+export interface UpdateStateDevice {
+  deviceId: string
+  deviceName: string
+  osVersion: string
+  featureUpdateVersion: string
+  status: string
+}
+export interface UpdateStatesRes {
+  success: boolean
+  summary: UpdateStateSummary
+  states: UpdateStateDevice[]
+  permissionError?: boolean
+  error?: string
+  fromCache?: boolean
+}
+
+// UEA scores
+export interface UEAOverview {
+  startupScore: number
+  appReliabilityScore: number
+  batteryHealthScore: number
+  workFromAnywhereScore: number
+}
+export interface UEAAppHealth {
+  appName: string
+  appPublisher: string
+  crashCount: number
+  hangCount: number
+  crashRate: number
+}
+export interface UEAScoresRes {
+  success: boolean
+  overview: UEAOverview | null
+  appHealth: UEAAppHealth[]
+  permissionError?: boolean
+  error?: string
+  fromCache?: boolean
+}
+
+// Autopilot events
+export interface AutopilotEvent {
+  id: string
+  deviceRegisteredDateTime: string
+  enrollmentState: string
+  enrollmentFailureDetails: string | null
+}
+export interface AutopilotEventsRes {
+  success: boolean
+  events: AutopilotEvent[]
+  permissionError?: boolean
+  error?: string
+  fromCache?: boolean
 }
 
 export interface GetDevicesRes {
   success: boolean
   devices: DeviceItem[]
   error?: string
+  fromCache?: boolean
 }
 
 export interface TriggerDeviceActionRes {

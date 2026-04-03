@@ -1,6 +1,6 @@
 # IntuneManager — Project Overview
 
-**Last Updated:** 2026-03-31
+**Last Updated:** 2026-04-02
 
 ## What is IntuneManager?
 
@@ -122,6 +122,13 @@ Navigation is standardised across all pages as: Dashboard → Installed Apps →
 
 **Recommendations DB cache + background refresh**
 AI recommendations are persisted to `app_settings` (`recommendations_cache` key) after each Claude call. On subsequent loads the cached list is returned immediately (instant display), and a background Claude call refreshes the list and pushes updated results to the renderer via `ipc:ai:recommendations-updated`. This eliminates the 3–8 second wait on every App Catalog visit.
+
+**Dual Claude connection (Direct API + AWS Bedrock SSO)**
+Settings → General now supports two Claude connection methods:
+1. **Direct Anthropic API key** — `claude_api_key_encrypted` stored AES-256-CBC in `app_settings`. The masked key is displayed on load; the raw key is only sent to Anthropic.
+2. **AWS Bedrock via SSO** — `aws_region` + `aws_bedrock_model_id` stored in `app_settings`. A "Login with AWS SSO" button runs `aws sso login` via `ipc:aws:sso-login`. At least one method must be configured before Settings can be saved.
+
+The `claudeApiKeyConfigured` flag is derived server-side (electron/ipc/settings.ts) — if the encrypted row exists, the flag is `true` even though the displayed value is masked. This prevents the validation logic from misreading a masked key as "unconfigured".
 
 **`New-Win32App.ps1` — raw JSON via HttpWebRequest**
 The app creation script does NOT use `GraphClient.psm1`'s `Invoke-GraphRequest` (which does `$Body | ConvertTo-Json`). Instead it:
@@ -257,7 +264,7 @@ The Dashboard (`/dashboard`) provides an at-a-glance view of both app inventory 
 | `users` | Local application users (not AAD users). Roles: superadmin, admin, viewer |
 | `sessions` | UUID session tokens, 8-hour expiry |
 | `tenant_config` | Single-row: connected AAD tenant, username, `token_expiry`, `connected_at` |
-| `app_settings` | Key-value store: API key (encrypted), paths, default OS version, `recommendations_cache` |
+| `app_settings` | Key-value store: API key (encrypted), paths, default OS version, `recommendations_cache`, `aws_region`, `aws_bedrock_model_id` |
 | `app_deployments` | Deployment history log (schema defined; not yet fully populated by AI agent) |
 
 > **Note on `tenant_config`:** The `token_expiry` column was added in a migration on first launch after 2026-03-31. Existing DBs that predate this change have the column added automatically via `ALTER TABLE` at startup.
@@ -280,7 +287,7 @@ The Dashboard (`/dashboard`) provides an at-a-glance view of both app inventory 
 
 The AI agent is a Claude tool-use loop in `electron/ipc/ai-agent.ts`.
 
-**Model:** `claude-sonnet-4-5`
+**Model:** `claude-sonnet-4-5` (Direct API) or AWS Bedrock model ID (if Bedrock SSO is configured)
 
 **Tools available:**
 
@@ -328,8 +335,8 @@ Intune MSI Prep\
 │   │   └── ipc\
 │   │       ├── ai-agent.ts    <- Claude tool-use loop + 3 job runners + recommendations cache
 │   │       ├── auth.ts        <- Local auth (bcrypt, sessions)
-│   │       ├── ps-bridge.ts   <- PowerShell spawn + LOG/RESULT protocol + device IPC
-│   │       └── settings.ts    <- App settings + dialog handlers (file/folder picker)
+│   │       ├── ps-bridge.ts   <- PowerShell spawn + LOG/RESULT protocol + device IPC + ipc:aws:sso-login
+│   │       └── settings.ts    <- App settings + dialog handlers + aws_region/aws_bedrock_model_id
 │   ├── electron\ps-scripts\   <- 18 PS bridge scripts
 │   │   ├── Connect-Tenant.ps1          <- MSAL silent + interactive login
 │   │   ├── Disconnect-Tenant.ps1
@@ -489,3 +496,5 @@ Intune MSI Prep\
 - **PACKAGE_SETTINGS.md not found due to filename/folder name mismatch** — Fixed in `List-IntunewinPackages.ps1`: 4-level fuzzy matching (exact → normalized → prefix → substring). *(2026-03-30)*
 
 - **App Catalog recommendations slow to load** — Fixed: recommendations are now persisted to `app_settings` (`recommendations_cache`) after each Claude call. Subsequent loads return the cache immediately; Claude refresh runs in the background and pushes updated results via `ipc:ai:recommendations-updated`. *(2026-03-31)*
+
+- **Settings only supported a single Claude API key** — Fixed: Settings → General now supports two connection methods — Direct Anthropic API key or AWS Bedrock (SSO). Save is blocked with a clear error if neither method is configured. `aws_region` and `aws_bedrock_model_id` added to `app_settings`. `ipc:aws:sso-login` handler added to `ps-bridge.ts` to run `aws sso login`. *(2026-04-01)*

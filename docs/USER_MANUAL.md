@@ -1,6 +1,6 @@
 # IntuneManager — User Manual
 
-**Version:** 1.2 | **Audience:** IT Administrators | **Last Updated:** 2026-03-31
+**Version:** 1.3 | **Audience:** IT Administrators | **Last Updated:** 2026-04-02
 
 ---
 
@@ -93,12 +93,23 @@ Download and place it in a location you will configure in Settings (e.g. `C:\Too
 | Anthropic API key | To run the AI packaging agent |
 | Internet access | To download installers and call the Anthropic API |
 
-### Anthropic API key
+### Claude AI connection
 
+IntuneManager requires at least one of the following:
+
+**Option A — Anthropic API key (Direct)**
 1. Go to `https://console.anthropic.com`
 2. Sign in and navigate to **API Keys**
 3. Create a new key and copy it
-4. You will enter this in Settings → General after first launch
+4. Enter it in Settings → General → Claude AI Connection → Direct Claude API
+
+**Option B — AWS Bedrock (SSO)**
+If your organization provides Claude access through AWS Bedrock:
+1. Obtain your AWS Region (e.g. `us-east-1`) and the Bedrock Model ID for Claude (e.g. `anthropic.claude-sonnet-4-5-v1:0`) from your cloud team
+2. Enter these in Settings → General → Claude AI Connection → AWS Bedrock (SSO)
+3. Click **Login with AWS SSO** to authenticate (requires the AWS CLI to be installed)
+
+Both options can be configured simultaneously; the application uses whichever is available.
 
 ---
 
@@ -125,11 +136,24 @@ On first launch, the application displays a one-time setup screen.
 
 After logging in, click **Settings** in the top bar.
 
-**Settings → General**
+**Settings → General — Claude AI Connection**
+
+Configure at least one Claude connection method. The save button is blocked until one method is configured.
+
+*Method 1 — Direct Claude API (Anthropic):*
 
 | Field | What to enter |
 |-------|--------------|
-| Claude API Key | Your Anthropic API key (starts with `sk-ant-`) |
+| Anthropic API Key | Your Anthropic API key (starts with `sk-ant-`) |
+
+*Method 2 — AWS Bedrock (SSO):*
+
+| Field | What to enter | Example |
+|-------|--------------|---------|
+| AWS Region | The AWS region your Bedrock account is in | `us-east-1` |
+| Bedrock Model ID | The Claude model ID in your Bedrock account | `anthropic.claude-sonnet-4-5-v1:0` |
+
+After entering region and model ID, click **Login with AWS SSO** to authenticate. This requires the AWS CLI to be installed on this machine.
 
 **Settings → Paths**
 
@@ -488,13 +512,7 @@ Access Settings by clicking the **Settings** button in the navigation bar.
 
 ### General Tab
 
-| Setting | Description |
-|---------|-------------|
-| Claude API Key | Your Anthropic API key. Stored encrypted on this machine. |
-| Default Minimum OS | The minimum Windows version used when creating new Intune apps (default: Windows 10 21H2) |
-| Log Retention (days) | How long deployment logs are kept |
-
-### Paths Tab
+**Paths section**
 
 | Setting | Description |
 |---------|-------------|
@@ -504,7 +522,34 @@ Access Settings by clicking the **Settings** button in the navigation bar.
 
 Click **Browse** next to each field to pick a path via the file dialog.
 
-After changing any path, click **Save**.
+**Claude AI Connection section**
+
+Configure at least one method. Save is blocked until one is configured.
+
+*Method 1 — Direct Claude API*
+
+| Setting | Description |
+|---------|-------------|
+| Anthropic API Key | Your Anthropic API key. Stored AES-256 encrypted on this machine. Shows "Configured" badge when a key is saved. |
+
+*Method 2 — AWS Bedrock (SSO)*
+
+| Setting | Description |
+|---------|-------------|
+| AWS Region | The AWS region where your Bedrock account is provisioned (e.g. `us-east-1`) |
+| Bedrock Model ID | Claude model ID in your Bedrock account (e.g. `anthropic.claude-sonnet-4-5-v1:0`) |
+| Login with AWS SSO | Runs `aws sso login` to authenticate your AWS session. Requires the AWS CLI to be installed. |
+
+Both methods can be configured at the same time. A green "Configured" badge appears next to each method when it has valid settings.
+
+**Defaults section**
+
+| Setting | Description |
+|---------|-------------|
+| Default Minimum OS | The minimum Windows version used when creating new Intune apps (default: Windows 10 21H2) |
+| Log Retention (days) | How long deployment logs are kept |
+
+After changing any setting, click **Save**.
 
 ### Tenant Tab
 
@@ -529,7 +574,22 @@ Manage local application accounts:
 ### "Claude API key not configured"
 
 **Symptom:** App Catalog or Deploy page shows this error when starting a job.
-**Fix:** Go to Settings → General, enter your Anthropic API key, and click Save. Restart if required.
+**Fix:** Go to Settings → General, configure at least one Claude connection method (Direct API Key or AWS Bedrock), and click Save. Restart if required.
+
+### "AWS SSO login failed" / AWS CLI not found
+
+**Symptom:** Clicking "Login with AWS SSO" shows an error.
+**Cause 1:** The AWS CLI is not installed.
+**Fix:** Install the AWS CLI from `https://aws.amazon.com/cli/` and retry.
+**Cause 2:** Your AWS SSO profile is not configured.
+**Fix:** Run `aws configure sso` in a terminal to set up your SSO profile, then click "Login with AWS SSO" again.
+**Cause 3:** Your SSO session has expired.
+**Fix:** Click "Login with AWS SSO" — this opens a browser window to re-authenticate your session.
+
+### "At least one Claude connection method is required"
+
+**Symptom:** Clicking Save in Settings shows this error.
+**Fix:** Either enter a Direct API Key in the Anthropic API Key field, or fill in both the AWS Region and Bedrock Model ID fields before saving.
 
 ### "Could not load recommendations" / API credit error
 
@@ -684,8 +744,8 @@ Devices -> Find device -> Sync Updates / Sync Drivers
 
 - [ ] Install IntuneWinAppUtil.exe
 - [ ] Launch IntuneManager, save generated password, log in
-- [ ] Settings → General: enter Claude API key
-- [ ] Settings → Paths: set IntuneWinAppUtil, Source Root, Output Folder
+- [ ] Settings → General → Claude AI Connection: configure Direct API Key **or** AWS Bedrock region + model ID
+- [ ] Settings → General → Paths: set IntuneWinAppUtil, Source Root, Output Folder
 - [ ] Settings → Tenant: Connect with Browser
 - [ ] Dashboard → verify stats load
 - [ ] Installed Apps → Sync: verify apps load

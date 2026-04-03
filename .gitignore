@@ -1,8 +1,6 @@
 # Node / Electron build artifacts
 IntuneManagerUI/node_modules/
-IntuneManagerUI/dist/
-IntuneManagerUI/dist-electron/
-IntuneManagerUI/dist-installer/
+IntuneManagerUI/builds/
 IntuneManagerUI/release/
 IntuneManagerUI/*.tsbuildinfo
 

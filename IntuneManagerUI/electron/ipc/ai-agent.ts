@@ -1,11 +1,70 @@
 import { ipcMain, BrowserWindow, app } from 'electron'
 import Anthropic from '@anthropic-ai/sdk'
+import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
 import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { decryptSetting } from './settings'
 import { runPsScript } from './ps-bridge'
 import path from 'path'
 import fs from 'fs'
+
+// ─── Claude client factory ────────────────────────────────────────────────────
+// Prefers AWS Bedrock (SSO) when aws_region is configured in settings.
+// Falls back to direct Anthropic API key when Bedrock is not configured.
+
+interface ClientBundle {
+  client: Anthropic | AnthropicBedrock
+  model: string
+}
+
+function createClient(db: Database): ClientBundle {
+  const getRow = (key: string) => {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
+    return row?.value ?? ''
+  }
+
+  const awsRegion = getRow('aws_region')
+  const bedrockModelId = getRow('aws_bedrock_model_id')
+
+  if (awsRegion && bedrockModelId) {
+    // Bedrock client — picks up AWS SSO credentials automatically from the credential chain
+    return {
+      client: new AnthropicBedrock({ awsRegion }),
+      model: bedrockModelId,
+    }
+  }
+
+  // Direct Anthropic API key fallback
+  const apiKeyRow = db.prepare("SELECT value FROM app_settings WHERE key = 'claude_api_key_encrypted'").get() as { value: string } | undefined
+  const apiKey = apiKeyRow ? decryptSetting(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
+  return {
+    client: new Anthropic({ apiKey }),
+    model: 'claude-sonnet-4-6',
+  }
+}
+
+function assertClientConfigured(db: Database): ClientBundle {
+  const getRow = (key: string) => {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
+    return row?.value ?? ''
+  }
+  const awsRegion = getRow('aws_region')
+  const bedrockModelId = getRow('aws_bedrock_model_id')
+
+  if (awsRegion && !bedrockModelId) {
+    throw new Error('Bedrock Model ID is required. Go to Settings → General and enter the Bedrock Model ID (e.g. anthropic.claude-3-5-sonnet-20241022-v2:0).')
+  }
+
+  if (!awsRegion) {
+    // Bedrock not configured — check direct API key
+    const apiKeyRow = db.prepare("SELECT value FROM app_settings WHERE key = 'claude_api_key_encrypted'").get() as { value: string } | undefined
+    const apiKey = apiKeyRow ? decryptSetting(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
+    if (!apiKey) {
+      throw new Error('No Claude connection configured. Go to Settings → General and configure AWS Bedrock (SSO) or an Anthropic API key.')
+    }
+  }
+  return createClient(db)
+}
 
 interface ActiveJob {
   id: string
@@ -458,9 +517,11 @@ export function registerAiAgentHandlers(win: BrowserWindow, db: Database): void 
   // Strategy: return DB-cached recommendations immediately (instant load), then refresh
   // from Claude in the background and push updated results via a separate IPC event.
   ipcMain.handle('ipc:ai:get-recommendations', async (event) => {
-    const apiKeyRow = db.prepare("SELECT value FROM app_settings WHERE key = 'claude_api_key_encrypted'").get() as { value: string } | undefined
-    const apiKey = apiKeyRow ? decryptSetting(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
-    if (!apiKey) return { success: false, error: 'Claude API key not configured', recommendations: [], fromCache: false }
+    let clientBundle: ClientBundle
+    try { clientBundle = assertClientConfigured(db) } catch (err) {
+      return { success: false, error: (err as Error).message, recommendations: [], fromCache: false }
+    }
+    const { client, model } = clientBundle
 
     // Return cached recommendations immediately if available
     const cacheRow = db.prepare("SELECT value FROM app_settings WHERE key = 'recommendations_cache'").get() as { value: string } | undefined
@@ -472,9 +533,8 @@ export function registerAiAgentHandlers(win: BrowserWindow, db: Database): void 
     // Background refresh function — fetches from Claude and saves to DB
     const refreshInBackground = async () => {
       try {
-        const anthropic = new Anthropic({ apiKey })
-        const response = await anthropic.messages.create({
-          model: 'claude-sonnet-4-5',
+        const response = await (client as Anthropic).messages.create({
+          model,
           max_tokens: 4096,
           system: `You are an enterprise IT assistant. Return a JSON array of 50 commonly deployed enterprise Windows applications.
 Each item must have: id (unique string), name (string), publisher (string), description (string, max 80 chars), wingetId (string or null), category (string).
@@ -489,7 +549,11 @@ Respond ONLY with a JSON array. No markdown, no explanation.`,
           // Notify renderer with refreshed results
           event.sender.send('ipc:ai:recommendations-updated', { recommendations: fresh })
         }
-      } catch { /* background refresh failure is silent — cached data still shown */ }
+      } catch (refreshErr) {
+        console.error('[AI] Background recommendation refresh failed:', (refreshErr as Error).message)
+        // Notify renderer of refresh error so it can show a warning without clearing cached data
+        event.sender.send('ipc:ai:recommendations-updated', { recommendations: null, error: (refreshErr as Error).message })
+      }
     }
 
     if (cachedRecommendations && cachedRecommendations.length > 0) {
@@ -500,9 +564,8 @@ Respond ONLY with a JSON array. No markdown, no explanation.`,
 
     // No cache — must wait for Claude (first-ever load)
     try {
-      const anthropic = new Anthropic({ apiKey })
-      const response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-5',
+      const response = await (client as Anthropic).messages.create({
+        model,
         max_tokens: 4096,
         system: `You are an enterprise IT assistant. Return a JSON array of 50 commonly deployed enterprise Windows applications.
 Each item must have: id (unique string), name (string), publisher (string), description (string, max 80 chars), wingetId (string or null), category (string).
@@ -576,10 +639,8 @@ async function runDeployJob(
     sendEvent('job:phase-change', { jobId, phase, label })
   }
 
-  // Get API key
-  const apiKeyRow = db.prepare("SELECT value FROM app_settings WHERE key = 'claude_api_key_encrypted'").get() as { value: string } | undefined
-  const apiKey = apiKeyRow ? decryptSetting(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
-  if (!apiKey) throw new Error('Claude API key not configured. Go to Settings → General to add your API key.')
+  const { client, model } = assertClientConfigured(db)
+  const isBedrockClient = client instanceof AnthropicBedrock
 
   // Get configured paths — injected into the system prompt so Claude knows where to write files
   const getSettingRow = (key: string, fallback: string) => {
@@ -593,8 +654,6 @@ async function runDeployJob(
 - Source root: ${sourceRoot}  →  Create app subfolder here (e.g. ${sourceRoot}\\SevenZip)
 - Output folder: ${outputFolder}  →  Pass this as output_folder to build_package`
 
-  const anthropic = new Anthropic({ apiKey })
-
   const messages: Anthropic.MessageParam[] = [{
     role: 'user',
     content: req.isUpdate && req.existingAppId
@@ -605,6 +664,7 @@ async function runDeployJob(
   setPhase('analyzing')
   log(`Starting deployment: "${req.userRequest}"`)
   if (req.isUpdate && req.existingAppId) log(`Update mode — existing app ID: ${req.existingAppId}`)
+  log(`AI connection: ${isBedrockClient ? `AWS Bedrock (${model})` : `Direct API (${model})`}`)
   log(`Source root: ${sourceRoot}`)
   log(`Output folder: ${outputFolder}`)
 
@@ -612,8 +672,8 @@ async function runDeployJob(
   while (iterations++ < 20) {
     if (signal.aborted) throw new Error('Job cancelled')
 
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
+    const response = await (client as Anthropic).messages.create({
+      model,
       max_tokens: 4096,
       system: SYSTEM_PROMPT + pathContext,
       tools: DEPLOY_TOOLS,
@@ -792,9 +852,8 @@ async function runPackageOnlyJob(
     sendEvent('job:phase-change', { jobId, phase, label })
   }
 
-  const apiKeyRow = db.prepare("SELECT value FROM app_settings WHERE key = 'claude_api_key_encrypted'").get() as { value: string } | undefined
-  const apiKey = apiKeyRow ? decryptSetting(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
-  if (!apiKey) throw new Error('Claude API key not configured. Go to Settings → General to add your API key.')
+  const { client, model } = assertClientConfigured(db)
+  const isBedrockClient = client instanceof AnthropicBedrock
 
   const getSettingRow = (key: string, fallback: string) => {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
@@ -807,7 +866,6 @@ async function runPackageOnlyJob(
 - Source root: ${sourceRoot}  →  Create app subfolder here (e.g. ${sourceRoot}\\SevenZip)
 - Output folder: ${outputFolder}  →  Pass this as output_folder to build_package`
 
-  const anthropic = new Anthropic({ apiKey })
   const messages: Anthropic.MessageParam[] = [{
     role: 'user',
     content: req.userRequest
@@ -815,6 +873,7 @@ async function runPackageOnlyJob(
 
   setPhase('analyzing')
   log(`Starting packaging: "${req.userRequest}"`)
+  log(`AI connection: ${isBedrockClient ? `AWS Bedrock (${model})` : `Direct API (${model})`}`)
   log(`Source root: ${sourceRoot}`)
   log(`Output folder: ${outputFolder}`)
 
@@ -826,8 +885,8 @@ async function runPackageOnlyJob(
   while (iterations++ < 20) {
     if (signal.aborted) throw new Error('Job cancelled')
 
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
+    const response = await (client as Anthropic).messages.create({
+      model,
       max_tokens: 4096,
       system: PACKAGE_ONLY_SYSTEM_PROMPT + pathContext,
       tools: PACKAGE_ONLY_TOOLS,

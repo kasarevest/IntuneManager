@@ -4,7 +4,8 @@ import {
   RouterProvider,
   Navigate,
   Outlet,
-  useNavigate
+  useNavigate,
+  useLocation
 } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { TenantProvider } from './contexts/TenantContext'
@@ -18,20 +19,24 @@ import Deploy from './pages/Deploy'
 import AppCatalog from './pages/AppCatalog'
 import Devices from './pages/Devices'
 import Settings from './pages/Settings'
+import NewUserSetup from './pages/NewUserSetup'
 import GeneralTab from './settings/GeneralTab'
 import TenantTab from './settings/TenantTab'
 import UsersTab from './settings/UsersTab'
 
-// Guard: redirect to /login if not authenticated
+// Guard: redirect to /login if not authenticated; redirect mustChangePassword users to /new-user-setup
 function RequireAuth() {
   const { user, isLoading } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
 
   useEffect(() => {
     if (!isLoading && !user) {
       navigate('/login', { replace: true })
+    } else if (!isLoading && user?.mustChangePassword && location.pathname !== '/new-user-setup') {
+      navigate('/new-user-setup', { replace: true })
     }
-  }, [user, isLoading, navigate])
+  }, [user, isLoading, navigate, location.pathname])
 
   if (isLoading) {
     return (
@@ -74,6 +79,7 @@ const router = createHashRouter([
   {
     element: <RequireAuth />,
     children: [
+      { path: '/new-user-setup', element: <NewUserSetup /> },
       { path: '/dashboard', element: <Dashboard /> },
       { path: '/installed-apps', element: <InstalledApps /> },
       { path: '/catalog', element: <AppCatalog /> },

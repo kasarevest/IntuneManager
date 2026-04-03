@@ -509,6 +509,138 @@ if (!cols.some(c => c.name === 'new_column')) {
 
 ---
 
+## Lesson 009 — DB Cache-First Pattern for Electron IPC (2026-04-02)
+
+### Keywords
+`electron`, `ipc`, `sqlite`, `cache`, `setImmediate`, `background-refresh`, `useCallback`, `pendingRefreshes`, `win.isDestroyed`, `sendToRenderer`, `peer-review`
+
+### What Happened
+Implemented DB caching for all 6 Intune data fetches (Dashboard + App Catalog). Each IPC handler returns SQLite-cached data immediately, then fires a `setImmediate` background PS refresh that emits an IPC update event when done. Dashboard subscribes to the 6 events and applies fresh data live.
+
+Peer review found 2 genuine blocking bugs before the implementation went to production:
+1. `sendToRenderer` called inside `setImmediate` callbacks without guarding against window destruction — would throw an unhandled error if the app closed during a background PS refresh.
+2. `pendingCacheRefreshes.current = cacheHits` overwrote the counter instead of accumulating — corrupted the "Refreshing..." spinner state when `fetchSummary` was called twice in quick succession (e.g., manual refresh + 60s interval overlap).
+
+### Anti-Pattern (Why It Happened)
+**setImmediate callbacks are fire-and-forget — the handler has already returned by the time they run.** The window could be destroyed at any point after the handler returns. Any reference to `win` inside a `setImmediate` is a use-after-free risk unless guarded.
+
+**Shared mutable counters with assignment semantics (`=`) instead of accumulation (`+=`) break under concurrent callers.** Multiple calls to the same function within a short window (interval timer + user click) will overwrite each other's state. Always use `+=` when a counter tracks in-flight operations.
+
+### Heuristic (Prevention)
+
+**Always guard `sendToRenderer` (or any `win.webContents.*` call) that runs inside `setImmediate`, `setTimeout`, or an async callback:**
+```typescript
+// WRONG — throws if window closed before callback fires:
+setImmediate(async () => {
+  sendToRenderer('channel', data)  // win may be destroyed
+})
+
+// CORRECT — check first:
+const sendToRenderer = (channel: string, data: unknown) => {
+  if (!win.isDestroyed()) win.webContents.send(channel, data)
+}
+```
+Put the guard in `sendToRenderer` itself so every call site is automatically protected.
+
+**Use `+=` for any ref/state tracking concurrent in-flight operations:**
+```typescript
+// WRONG — second call overwrites first:
+pendingRefreshes.current = newCount
+
+// CORRECT — accumulates across concurrent callers:
+pendingRefreshes.current += newCount
+```
+
+**The cache-first + background refresh pattern for Electron IPC:**
+```typescript
+// Main process handler:
+ipcMain.handle('ipc:ps:get-devices', async () => {
+  const cached = getCached(db, 'cache_db_devices')
+  if (cached) {
+    setImmediate(async () => {
+      try {
+        const r = await runPsScript('Get-IntuneDevices.ps1', [])
+        const fresh = r.result ?? { success: false, devices: [] }
+        if ((fresh as any).success) saveCache(db, 'cache_db_devices', fresh)
+        sendToRenderer('ipc:cache:devices-updated', fresh)  // guarded
+      } catch (e) {
+        sendToRenderer('ipc:cache:devices-updated', { success: false, error: String(e) })
+      }
+    })
+    return { ...cached, fromCache: true }
+  }
+  const result = await runPsScript('Get-IntuneDevices.ps1', [])
+  const data = result.result ?? { success: false, devices: [] }
+  if ((data as any).success) saveCache(db, 'cache_db_devices', data)
+  return data
+})
+
+// Renderer — result processors as stable useCallbacks:
+const applyDevicesResult = useCallback((data: GetDevicesRes) => {
+  if (!data.success) return
+  setDeviceSummary(...)  // process data
+}, [])  // stable — only closes over setState functions
+
+// Renderer — detect cache hits and subscribe to refresh events:
+// In fetchSummary, after Promise.allSettled:
+const cacheHits = results.filter(r => r.status === 'fulfilled' && (r.value as any).fromCache).length
+if (cacheHits > 0) { pendingCacheRefreshes.current += cacheHits; setRefreshing(true) }
+
+// In a separate useEffect:
+const unsubs = [
+  onCacheDevicesUpdated(data => { if (data.success) applyDevicesResult(data); decrement() }),
+  // ... one per data type
+]
+return () => unsubs.forEach(fn => fn())
+```
+
+**The `applyXxxResult` pattern — share processing logic between initial fetch and cache update events:**
+Extracting result processing into stable `useCallback` functions avoids duplicating 200+ lines of processing logic between `fetchSummary` and event handlers. Since these functions only close over `setState` functions (which are stable), they can have empty dependency arrays and stay stable across renders.
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---------|----------------|
+| `sendToRenderer` window guard | `if (!win.isDestroyed()) win.webContents.send(channel, data)` — in the function body, not at call sites |
+| Pending in-flight counter | `pendingRef.current += n` (not `= n`); decrement on each event; `setSpinner(false)` when counter reaches 0 |
+| Cache key convention | `cache_db_<datatype>` in `app_settings` table — all cleared together via `WHERE key LIKE 'cache_db_%'` |
+| Result processor pattern | `const applyFooResult = useCallback((data: FooRes) => { if (!data.success) return; setState... }, [])` — stable, reusable in both fetchSummary and event handlers |
+| Background refresh emit rule | Always emit event (even on failure) so `decrement()` fires and spinner clears; apply functions ignore failures safely |
+| TypeScript fromCache? | Add to all affected response interfaces; use `(value as unknown as Record<string, unknown>).fromCache` to avoid type overlap error in mixed union arrays |
+
+---
+
+## Lesson 010 — Stale Compiled .js Files Shadowing TypeScript Source (2026-04-02)
+
+### Keywords
+`vite`, `typescript`, `tsc`, `noEmit`, `js files`, `shadow`, `compiled artifacts`, `extension resolution`, `electron`, `build script`
+
+### What Happened
+Multiple sessions of TypeScript changes (Dashboard v2, caching, new user setup) appeared to have no effect when running the app. Root cause: `package.json` build script ran a bare `tsc` command (no `--noEmit`, no `outDir` in `tsconfig.json`), which emitted compiled `.js` files directly into `src/` alongside the `.tsx` source files. Vite resolves `.js` before `.tsx` in its default extension resolution order (`['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', ...]`), so ALL TypeScript changes were silently ignored — the app ran the old stale compiled `.js` files throughout.
+
+### Anti-Pattern (Why It Happened)
+`tsconfig.json` had no `outDir` and no `noEmit`, so TypeScript defaulted to emitting next to source files. The build script intended `tsc` as a type-check step only, but without `--noEmit`, it emitted `.js` artifacts. The `.js` files were committed to the repo (no `.gitignore`), and over time became stale relative to the `.tsx` source.
+
+**The silent failure mode is particularly dangerous:** Vite loads the stale `.js` file without warning. The app runs, just without any of your recent changes.
+
+### Heuristic (Prevention)
+
+1. **Always add `"noEmit": true` to `tsconfig.json`** for any project where Vite (or another bundler) handles the build. TypeScript should only type-check; the bundler bundles.
+2. **Always use `tsc --noEmit` in build scripts**, never bare `tsc`, unless you explicitly want `.js` output to a separate `outDir`.
+3. **Add `src/**/*.js` to `.gitignore`** (when `src/` contains only `.ts`/`.tsx` source files) to prevent compiled artifacts from being committed.
+4. **If a code change appears to have no effect**, immediately check for `.js` shadow files with the same basename as your `.ts`/`.tsx` files.
+
+### Technical Patterns Established
+
+| Pattern | Rule |
+|---------|------|
+| tsconfig.json for Vite projects | Always include `"noEmit": true` |
+| build script type-check | Use `tsc --noEmit` not `tsc` |
+| Extension shadowing diagnosis | Run `find src -name "*.js"` and compare to `.tsx` counterparts when changes have no effect |
+| Cleanup command | `find src -name "*.js" -exec rm {} \;` (after adding noEmit to prevent regeneration) |
+
+---
+
 ## Lesson Template (copy for new entries)
 
 ```

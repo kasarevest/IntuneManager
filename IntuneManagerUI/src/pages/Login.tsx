@@ -11,7 +11,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (user) navigate('/dashboard', { replace: true })
+    if (user) navigate(user.mustChangePassword ? '/new-user-setup' : '/dashboard', { replace: true })
   }, [user, navigate])
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -22,7 +22,7 @@ export default function Login() {
     const result = await login(username, password)
     setLoading(false)
     if (result.success) {
-      navigate('/dashboard', { replace: true })
+      navigate(result.user?.mustChangePassword ? '/new-user-setup' : '/dashboard', { replace: true })
     } else {
       setError(result.error ?? 'Login failed')
     }

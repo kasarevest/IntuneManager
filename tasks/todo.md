@@ -1408,3 +1408,685 @@ Logic flow after fix:
 
 ---
 
+# Task: Settings Page — Dual Claude Connection (API + AWS Bedrock SSO) (2026-04-01)
+
+## Pre-Flight Plan
+
+### Spec
+`docs/specs/feature-spec-ai_connection.md`
+
+### Objective
+Update the Settings page to support two Claude connection methods:
+1. **Direct Claude API** — existing Anthropic API key field (already present)
+2. **AWS Bedrock (SSO)** — AWS Region + Bedrock Model ID fields + "Login with AWS SSO" button
+
+Validation: save succeeds if either method is configured. If neither is present, show:
+> "At least one Claude connection method is required."
+
+### Lessons Consulted
+- **Lesson 001:** Enhanced Workflow mandatory. Plan/verification/post-flight.
+- **Lesson 005 (IPC):** All new IPC round-trips need matching types in `ipc.ts` and wrappers in `lib/ipc.ts`.
+
+### Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| AWS SSO login (`aws sso login`) not installed on all machines | High | Low | Button shows error if AWS CLI not found; fields still saveable without running SSO |
+| `SettingsGetRes` returns masked API key — validation logic reads empty string as "not configured" | Certain | Medium | Check masked key server-side: if `claude_api_key_encrypted` row exists in DB → treat API as configured |
+| New Bedrock fields missing on first load (older DB) — causes undefined rendering | Low | Low | All fields default to `''` in state; settings.ts upserts only when value is present |
+| Form save does not touch paths/defaults when only Claude section changed | None | None | Save already sends all fields; no partial save needed |
+
+### Side-Effect Audit
+1. `ai-agent.ts` reads only `claude_api_key_encrypted` — unchanged; Bedrock credential path is a future concern, not in this spec.
+2. `SettingsGetRes` extension is additive — existing callers unaffected.
+3. Validation added to `handleSave` only — no impact on path/defaults sections.
+
+### Dependency Graph
+```
+types/app.ts (AppSettings + 2 fields)
+  ↓
+types/ipc.ts (SaveSettingsReq + 2 fields; new AwsSsoLoginRes)
+  ↓
+lib/ipc.ts (SettingsGetRes + 2 fields; ipcAwsSsoLogin wrapper)
+  ↓
+electron/ipc/settings.ts (read/write aws_region, aws_bedrock_model_id)
+electron/ipc/ps-bridge.ts (ipc:aws:sso-login handler)
+  ↓
+src/settings/GeneralTab.tsx (UI: two method cards + validation)
+```
+
+### Checklist
+
+- [x] 1. `src/types/app.ts` — add `awsRegion`, `awsBedrockModelId` to `AppSettings`
+- [x] 2. `src/types/ipc.ts` — add `awsRegion`, `awsBedrockModelId` to `SaveSettingsReq`; add `AwsSsoLoginRes`
+- [x] 3. `src/lib/ipc.ts` — add `awsRegion?`, `awsBedrockModelId?`, `claudeApiKeyConfigured?` to `SettingsGetRes`; add `ipcAwsSsoLogin`
+- [x] 4. `electron/ipc/settings.ts` — read/write `aws_region`, `aws_bedrock_model_id`; expose `claudeApiKeyConfigured` flag
+- [x] 5. `electron/ipc/ps-bridge.ts` — register `ipc:aws:sso-login` handler (runs `aws sso login`)
+- [x] 6. `src/settings/GeneralTab.tsx` — redesign Claude AI card with two method sections + save validation
+- [x] 7. `npx tsc --noEmit` — 0 errors
+- [x] 8. Post-flight review written
+
+---
+
+## Post-Flight Review
+
+### Evidence of Correctness
+
+```
+npx tsc --noEmit → (no output, exit 0)
+0 errors across all changed files  ✅
+```
+
+**Files changed:**
+```
+src/types/app.ts                      — awsRegion, awsBedrockModelId added to AppSettings
+src/types/ipc.ts                      — same fields in SaveSettingsReq; AwsSsoLoginRes added
+src/lib/ipc.ts                        — SettingsGetRes extended; ipcAwsSsoLogin wrapper added
+electron/ipc/settings.ts              — get/save handlers updated for aws_region, aws_bedrock_model_id; claudeApiKeyConfigured flag
+electron/ipc/ps-bridge.ts            — ipc:aws:sso-login handler registered
+src/settings/GeneralTab.tsx           — full Claude AI section redesign with dual-method UI + validation
+```
+
+### Spec Coverage
+
+| Spec requirement | Implemented |
+|-----------------|-------------|
+| Direct Claude API configuration | ✅ Existing API key field retained; "Configured" badge when key present |
+| AWS SSO login for AWS Bedrock access | ✅ Region + Model ID fields + "Login with AWS SSO" button (runs `aws sso login`) |
+| At least one method required | ✅ Save blocked with clear error if both methods unconfigured |
+| UI clearly shows two optional-but-at-least-one methods | ✅ Two distinct method blocks with numbered badges and "or" divider |
+
+### Side-Effect Audit
+
+| Downstream | Impact |
+|-----------|--------|
+| `ai-agent.ts` | None — Bedrock routing not in scope; existing API key path unchanged |
+| `ipcSettingsSave` callers | None — new fields are optional; existing saves omit them without issue |
+| `GeneralTab` validation | Additive — validation only blocks save when both methods are empty; has no effect on path/defaults sections |
+
+### Workflow Compliance
+- ✅ Spec read before any code changes
+- ✅ Pre-flight plan written and user-approved before implementation
+- ✅ Dependency graph followed (types → IPC → electron handlers → UI)
+- ✅ tsc: 0 errors
+- ✅ Post-flight documented
+- ✅ Side-effect audit performed
+
+---
+
+# Task: Remote Agent — PS Terminal + Remote Desktop (Phase 1 + 2)
+
+## Pre-Flight Plan
+
+### Spec
+`docs/specs/feature-spec-remote-agent.md`
+
+### Objective
+Build a two-phase remote management system:
+- **Phase 1:** IntuneAgent Windows service + Azure Web PubSub relay (Azure Functions) + PS terminal in IntuneManager (xterm.js)
+- **Phase 2:** VNC-based remote desktop (TightVNC + noVNC) layered on top of Phase 1 infrastructure
+
+The relay infrastructure runs fully on Azure (Azure Web PubSub + Azure Functions + Azure Table Storage — no containers to operate). The agent is deployed to managed devices as a Win32 Intune package using IntuneManager's own packaging pipeline.
+
+### Lessons Consulted
+- **Lesson 001:** Enhanced Workflow mandatory. Plan/peer-review/post-flight. No exceptions.
+- **Lesson 003 (PS 5.1):** Install scripts must be PS 5.1 compatible. UTF-8 BOM required. No ternary syntax.
+- **Lesson 005 (IPC):** IPC race conditions — use refs for cross-event data handoff. types → lib/ipc → handler sequence.
+- **Lesson 006 (PS JSON):** Don't pass complex JSON as CLI args. Use temp files or named pipes.
+
+### Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Corporate proxy blocks outbound WSS on non-443 ports | High | High | Azure Web PubSub endpoint is on port 443; standard HTTPS — should pass all corporate proxies |
+| Azure Web PubSub outage | Low | High | Microsoft SLA 99.9%; agent reconnects automatically when service recovers |
+| TightVNC bundled binary flagged by AV on managed devices | Medium | High | Test against Defender before deployment; consider signing the binary |
+| PS runspace leaks if admin closes terminal without Kill | Medium | Medium | Agent enforces max 5 concurrent sessions; orphaned runspaces cleaned up after 30 min idle |
+| ECDH session key derivation differs between C# and Node.js | High | High | Write an integration test that derives a shared secret on both sides and verifies decryption |
+| Device token generation in PS 5.1 (HMAC-SHA256) | Medium | Medium | Use `System.Security.Cryptography.HMACSHA256` class, available in PS 5.1 |
+| noVNC performance in Electron WebView | Medium | Medium | Use canvas-based noVNC (no WebGL required); test at 1080p before Phase 2 commit |
+| `relay_secret` exposed in PACKAGE_SETTINGS.md | Certain | High | Document that PACKAGE_SETTINGS.md must NOT be committed to public repos; relay secret is a deployment credential |
+| Agent installed on device with no relay configured | Low | Low | Agent logs error to Windows Event Log and stops reconnecting after 3 failures |
+| IntuneAgent PS runspace runs as SYSTEM — privilege escalation risk | Medium | High | Runspace executes commands as-is; restrict access to admin+superadmin roles only in relay auth |
+
+### Dependency Graph
+
+```
+Phase 0 — Azure Infrastructure + Functions
+  Provision: Azure Web PubSub (Standard_S1) + Azure Functions + Table Storage
+    ↓
+  RelayFunctions/ project (Azure Functions v4, TypeScript)
+    → negotiate.ts (token issuance)
+    → onConnected.ts + onDisconnected.ts + onMessage.ts (event handlers)
+    → registry.ts (Table Storage CRUD)
+    → auth.ts (HMAC verify + session token verify)
+    ↓
+  Deploy Functions to Azure; configure Web PubSub event handler URL
+    ↓
+  Integration test: two wscat clients (mock device + mock admin) connect via negotiate,
+  send messages through Web PubSub, verify routing
+
+Phase 1A — Agent Core
+  IntuneAgent.csproj (.NET 8 Windows Service scaffold)
+    → RelayConnection.cs (negotiate() HTTP call → WebSocket connect; reconnect)
+    → AgentService.cs (host entry point)
+    → RegistryHelper.cs (DPAPI token store)
+    → AgentConfig.cs + appsettings.json
+
+Phase 1B — PS Shell
+  ShellSession.cs (PS runspace + output streaming)
+    ↓
+  Integration test: agent connects to relay, admin sends shell:start, verifies output
+
+Phase 1C — IntuneManager PS Terminal UI
+  electron/relay/relay-client.ts (admin WS client)
+    → electron/ipc/agent.ts (IPC handlers)
+    → src/types/agent.ts + src/types/ipc.ts (types)
+    → src/lib/ipc.ts (wrappers)
+    → src/pages/RemoteTerminal.tsx (xterm.js)
+    → src/pages/Devices.tsx (Connect PS button)
+    → src/App.tsx (/remote-terminal route)
+
+Phase 1D — Settings + Agent Packaging
+  Settings: negotiateUrl + negotiateSecret + sessionHmacSecret fields
+    → Build Agent Package button
+    → Source/IntuneAgent/ PS scripts (Install/Detect/Uninstall)
+    → PACKAGE_SETTINGS.md
+    → Output/Install-IntuneAgent.intunewin
+
+Phase 2A — VNC Infrastructure
+  SessionKeyExchange.cs (ECDH P-256 + AES-256-GCM in C#)
+    → Integration test: key exchange + encrypt/decrypt roundtrip between C# and Node.js
+
+Phase 2B — Agent VNC
+  VncSession.cs (TightVNC lifecycle + RFB proxy + encryption)
+    ↓
+  Integration test: agent starts VNC, frames arrive at admin relay client
+
+Phase 2C — IntuneManager Remote Desktop UI
+  electron/ipc/agent.ts: vnc-start/stop/input handlers + ECDH on Node.js side
+    → src/pages/RemoteDesktop.tsx (noVNC canvas)
+    → src/pages/Devices.tsx (Remote Desktop button)
+    → src/App.tsx (/remote-desktop route)
+```
+
+---
+
+## Phase 0 — Azure Infrastructure + Functions
+
+### Azure Provisioning Checklist
+
+- [ ] Create Azure Resource Group: `rg-intunemanager-relay`
+- [ ] Provision **Azure Web PubSub** resource: `wps-intunemanager`, SKU `Standard_S1`, hub name `agentHub`
+- [ ] Provision **Azure Storage Account**: `stintunemanagerrelay` (LRS, Standard); create tables `connections` and `sessions`
+- [ ] Provision **Azure Functions App**: `func-intunemanager-relay`, runtime Node 20, Consumption plan, Windows
+- [ ] Copy `WEBPUBSUB_CONNECTION_STRING` from Web PubSub resource → Functions App Settings
+- [ ] Copy `STORAGE_CONNECTION_STRING` from Storage Account → Functions App Settings
+- [ ] Generate 256-bit `NEGOTIATE_SECRET` and `SESSION_HMAC_SECRET` → Functions App Settings
+- [ ] Set `WEBPUBSUB_HUB=agentHub` in Functions App Settings
+- [ ] Write `RelayFunctions/deploy/main.bicep` — codify all above resources for repeatable deployment
+
+### Azure Functions Checklist
+
+- [ ] `RelayFunctions/` project scaffold: `func init --typescript`, `tsconfig.json`, `host.json`
+- [ ] `npm install @azure/functions @azure/web-pubsub @azure/data-tables jsonwebtoken`
+- [ ] `src/types.ts` — all message type definitions (device↔admin protocol, Web PubSub event payloads)
+- [ ] `src/auth.ts` — HMAC-SHA256 device token verify; session HMAC verify
+- [ ] `src/registry.ts` — Table Storage CRUD: upsert connection, get by userId, get by connectionId, delete
+- [ ] `src/functions/negotiate.ts` — `POST /api/negotiate?role=device|admin`; validate token; call `WebPubSubServiceClient.getClientAccessToken()`; register in Table Storage; return `{ url }`
+- [ ] `src/functions/onConnected.ts` — Web PubSub system event; confirm connectionId in Table Storage; broadcast `device:online` to admins if role=device
+- [ ] `src/functions/onDisconnected.ts` — Web PubSub system event; remove from Table Storage; broadcast `device:offline`; emit shell:exit/vnc:stop for any active sessions
+- [ ] `src/functions/onMessage.ts` — Web PubSub user event; parse message type; look up target connectionId; `sendToConnection()`; create/delete session rows for shell:start/exit
+- [ ] Configure Web PubSub event handler URL in Azure Portal: `https://func-intunemanager-relay.azurewebsites.net/api/webpubsub`
+- [ ] Unit tests: auth.ts HMAC verify, registry.ts CRUD (mock Table Storage client)
+- [ ] Integration test (local): `func start` + two wscat clients negotiate → connect → send shell:start → verify routing
+- [ ] Deploy to Azure: `func azure functionapp publish func-intunemanager-relay`
+- [ ] Integration test (Azure): repeat above against live Azure endpoints
+- [ ] Peer review of Functions code before moving to Phase 1A
+
+---
+
+## Phase 1A — Agent Core
+
+### Checklist
+
+- [ ] `IntuneAgent/IntuneAgent.csproj` — .NET 8 Worker Service template, self-contained Windows x64
+- [ ] `AgentConfig.cs` — configuration model (NegotiateUrl; DeviceId read from registry at runtime)
+- [ ] `RegistryHelper.cs` — DPAPI encrypt/decrypt DeviceToken; read DeviceId + NegotiateUrl from registry
+- [ ] `RelayConnection.cs` — `negotiate()` HTTP call to NegotiateUrl → receive Web PubSub WSS URL → `ClientWebSocket.ConnectAsync()`; no custom cert pinning (Azure's CA-backed TLS handles this); reconnect with exponential backoff; message send/receive loop; message dispatch to handlers
+- [ ] `AgentService.cs` — IHostedService; wires RelayConnection + handlers; lifecycle management
+- [ ] `Program.cs` — host builder with WindowsService support, logging to Windows Event Log
+- [ ] Unit test: RegistryHelper DPAPI roundtrip (mock registry)
+- [ ] Unit test: RelayConnection reconnect backoff timing
+- [ ] Manual test: service starts, connects to local relay, sends device:register, relay logs registration
+
+---
+
+## Phase 1B — PS Shell
+
+### Checklist
+
+- [ ] `ShellSession.cs` — PowerShell runspace create/dispose; async BeginInvoke with output callbacks; stdout + stderr streaming; max session enforcement; idle timeout cleanup
+- [ ] Unit test: ShellSession executes `"Get-Date"`, output arrives via callback
+- [ ] Integration test: agent + relay + mock admin client — send shell:start → receive shell:output lines → send shell:kill → receive shell:exit
+- [ ] Verify PS runspace runs as SYSTEM service account on test VM
+- [ ] Verify output encoding is UTF-8 end-to-end
+
+---
+
+## Phase 1C — IntuneManager PS Terminal
+
+### Checklist
+
+- [ ] `electron/relay/relay-client.ts` — WebSocket client; connect/disconnect; send/receive; emit Electron events on incoming messages; auto-reconnect
+- [ ] `src/types/agent.ts` — AgentSession, RelayDevice, ShellOutputEvent types
+- [ ] `src/types/ipc.ts` — AgentConnectRes, ShellStartReq/Res, ShellInputReq, ShellKillReq types added
+- [ ] `src/lib/ipc.ts` — ipcAgentConnectRelay, ipcAgentShellStart, ipcAgentShellInput, ipcAgentShellKill, onAgentShellOutput, onAgentShellExit, onAgentDeviceOnline, onAgentDeviceOffline wrappers
+- [ ] `electron/ipc/agent.ts` — register all IPC handlers; relay-client integration; admin JWT refresh logic
+- [ ] `electron/main.ts` — import and call registerAgentHandlers
+- [ ] `npm install @xterm/xterm @xterm/addon-fit` (renderer dependency)
+- [ ] `src/pages/RemoteTerminal.tsx` — xterm.js terminal; topbar (device name, status, Kill, Back); mount → shell:start; user input → shell:input; agent:shell-output → xterm write; agent:shell-exit → show exit code
+- [ ] `src/pages/Devices.tsx` — add relay online status indicator in topbar; add Connect PS button per row (disabled if device offline in relay); add Remote Desktop button placeholder (disabled, "Phase 2")
+- [ ] `src/App.tsx` — add /remote-terminal route
+- [ ] `npx tsc --noEmit` — 0 errors
+- [ ] End-to-end test: IntuneManager → relay → agent on test VM → terminal shows PS prompt → run `Get-Process` → output renders in xterm.js
+
+---
+
+## Phase 1D — Settings + Agent Packaging
+
+### Checklist
+
+- [ ] `src/types/app.ts` — add `negotiateUrl`, `negotiateSecret`, `sessionHmacSecret` to `AppSettings`
+- [ ] `src/types/ipc.ts` — add same fields to `SaveSettingsReq`; add `BuildAgentPackageRes`
+- [ ] `src/lib/ipc.ts` — `ipcAgentBuildPackage` wrapper
+- [ ] `electron/ipc/settings.ts` — read/write `relay_negotiate_url`, `relay_negotiate_secret_encrypted`, `relay_session_hmac_secret_encrypted`; add `ipc:agent:build-package` handler
+- [ ] `src/settings/GeneralTab.tsx` — Remote Agent card: Negotiate URL field, Negotiate Secret field (masked), Session HMAC Secret field (masked), Build Agent Package button with build status
+- [ ] `Source/IntuneAgent/Install-IntuneAgent.ps1` — full v1.0 per spec section 6; accepts `-NegotiateUrl`, `-NegotiateSecret` parameters; HMAC token generation via `HMACSHA256` class
+- [ ] `Source/IntuneAgent/Detect-IntuneAgent.ps1`
+- [ ] `Source/IntuneAgent/Uninstall-IntuneAgent.ps1`
+- [ ] `Source/IntuneAgent/PACKAGE_SETTINGS.md` — note: install command line contains secrets; do NOT commit to public repos
+- [ ] Parse-check all 3 PS scripts — all PASS
+- [ ] Peer review of install scripts before packaging
+- [ ] Build `.intunewin`: `IntuneWinAppUtil.exe -c Source\IntuneAgent -s Install-IntuneAgent.ps1 -o Output`
+- [ ] Deploy via IntuneManager to test device; verify agent installs, starts, negotiates with Azure Functions, connects to Web PubSub, appears online in Devices page
+- [ ] `npx tsc --noEmit` — 0 errors
+- [ ] Post-flight review
+
+---
+
+## Phase 2A — VNC Key Exchange Infrastructure
+
+### Checklist
+
+- [ ] `SessionKeyExchange.cs` — ECDH P-256 key pair generation; export public key (uncompressed, base64); import remote public key; derive shared secret; HKDF → AES-256-GCM key
+- [ ] Equivalent key exchange in `electron/relay/relay-client.ts` (Node.js `crypto.createECDH('prime256v1')`)
+- [ ] Integration test: C# derives shared secret from Node.js public key; Node.js derives same from C# public key; encrypt/decrypt roundtrip verifies both sides agree
+
+---
+
+## Phase 2B — Agent VNC
+
+### Checklist
+
+- [ ] Bundle TightVNC Server binaries in `IntuneAgent/Assets/TightVNC/` (tvnserver.exe + config)
+- [ ] `VncSession.cs` — TightVNC process launch on localhost:5900; loopback-only config; one-time session password; connect local TCP socket; read RFB frame loop; AES-256-GCM encrypt chunks; send vnc:frame; forward vnc:input events decoded and injected as RFB; tvnserver.exe cleanup on stop
+- [ ] Unit test: VncSession encrypts a dummy byte array; decrypt verifies roundtrip
+- [ ] Integration test: agent + relay + mock admin — vnc:start → vnc:ready → receive encrypted frames → decrypt → verify non-empty RFB data
+
+---
+
+## Phase 2C — IntuneManager Remote Desktop UI
+
+### Checklist
+
+- [ ] `npm install novnc` (or bundle local copy in `electron/novnc/`)
+- [ ] `electron/ipc/agent.ts` — add vnc-start/stop/input IPC handlers; ECDH key exchange on Node.js side; decrypt vnc:frame before emitting to renderer
+- [ ] `src/types/ipc.ts` — VncStartReq/Res, VncInputReq, VncFrameEvent types
+- [ ] `src/lib/ipc.ts` — ipcAgentVncStart, ipcAgentVncStop, ipcAgentVncInput, onAgentVncReady, onAgentVncFrame wrappers
+- [ ] `src/pages/RemoteDesktop.tsx` — noVNC canvas component; topbar (device name, resolution, latency, Disconnect, Back); mount → vnc:start + key exchange; agent:vnc-ready → set canvas size; agent:vnc-frame → feed to noVNC; mouse/keyboard events → ipcAgentVncInput
+- [ ] `src/pages/Devices.tsx` — enable Remote Desktop button (was placeholder in Phase 1C)
+- [ ] `src/App.tsx` — add /remote-desktop route
+- [ ] `npx tsc --noEmit` — 0 errors
+- [ ] End-to-end test: IntuneManager → relay → agent on test VM → remote desktop renders device screen → mouse click propagates
+
+---
+
+## Side-Effect Audit
+
+Changes that could break existing functionality:
+
+| Change | Potential downstream breakage |
+|--------|------------------------------|
+| Add relayServerUrl + relaySecret to AppSettings | None — additive fields with empty defaults |
+| Add new IPC handlers in agent.ts | None — new channels don't conflict with existing |
+| Modify Devices.tsx to add Connect PS / Remote Desktop buttons | Layout change — verify existing action buttons (Sync Updates, Sync Drivers, Request Logs) still render correctly at all table widths |
+| Add /remote-terminal and /remote-desktop routes to App.tsx | None — new routes don't conflict |
+| Bundle TightVNC in agent package | Agent package size increases; verify Intune upload doesn't timeout for larger package |
+
+---
+
+# Task: Dashboard v2 — Enhanced Diagnostics & Visualizations (2026-04-02)
+
+## Pre-Flight Plan
+
+### Spec
+`docs/specs/feature-spec-dashboard-v2.md`
+
+### Objective
+Extend the Dashboard with 6 new data panels using Recharts (SVG-based charting library):
+1. OS Version Distribution (horizontal bar chart — from existing device data)
+2. Enrollment Type Donut (from existing device data + 2 new $select fields)
+3. Security / Defender Posture (extend Get-IntuneDevices.ps1 with windowsProtectionState fields)
+4. App Install Health table (new Get-AppInstallStats.ps1 — per-app success/failure rates)
+5. Windows Update Compliance (new Get-UpdateStates.ps1 — beta endpoint)
+6. UEA Performance Scores (new Get-UEAScores.ps1 — requires UserExperienceAnalytics.Read.All)
+7. Autopilot Enrollment Events line chart (new Get-AutopilotEvents.ps1 — requires DeviceManagementServiceConfig.ReadWrite.All)
+
+Panels requiring new permissions render a "Permission required" banner instead of an error on 403.
+
+### Lessons Consulted
+- **Lesson 001:** Enhanced Workflow mandatory. Plan/peer-review/post-flight. No exceptions.
+- **Lesson 003 (PS 5.1):** UTF-8 BOM, no ternary, null-guard all property accesses.
+- **Lesson 005 (IPC):** types/ipc.ts → lib/ipc.ts → electron/ipc/ handler sequence.
+- **Lesson 006 (PS JSON):** Validate $select field additions don't break existing Graph queries.
+
+### Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Recharts bundle size causes slow Electron load | Low | Medium | SVG-based, ~180 KB gzip; acceptable for desktop app |
+| Get-AppInstallStats.ps1 runs N Graph calls (one per app) — slow with 100+ apps | High | Medium | Cap at 50 apps (sort by most recently published); show "showing top 50" label |
+| UEA/Autopilot endpoints return 403 — user sees confusing error | Certain (if no permission) | High | permissionError flag pattern: render instructional banner, not error card |
+| windowsUpdateStates beta endpoint deprecated | Low | Medium | Wrapped in try/catch; panel shows graceful "unavailable" state |
+| Recharts ResponsiveContainer requires explicit parent height | Medium | Low | All chart containers given explicit height in inline styles |
+| Adding deviceEnrollmentType to Get-IntuneDevices.ps1 $select breaks existing Graph call | Low | High | Test additive $select change against live tenant before committing |
+
+### Dependency Graph
+
+```
+Phase 1 (no new PS, no new permissions)
+  Dashboard.tsx: derive osDistribution + enrollmentTypes from existing devices data
+  recharts npm install
+  OsDistributionChart + EnrollmentDonut components
+
+Phase 2 (extend existing PS, no new permissions)
+  Get-IntuneDevices.ps1: add deviceEnrollmentType, joinType to $select
+  Get-IntuneDevices.ps1: extract Defender fields from windowsProtectionState
+  DeviceItem type: +enrollmentType, +joinType, +malwareProtectionEnabled, +realTimeProtectionEnabled,
+                   +signatureUpdateOverdue, +quickScanOverdue, +rebootRequired
+  SecurityPosturePanel component
+
+Phase 3 (new PS scripts, no new permissions)
+  Get-AppInstallStats.ps1 + Get-UpdateStates.ps1
+  IPC: AppInstallStatsRes + UpdateStatesRes types + wrappers + handlers
+  AppInstallHealthTable + UpdateComplianceChart components
+
+Phase 4 (new PS scripts, new permission: UserExperienceAnalytics.Read.All)
+  Get-UEAScores.ps1
+  IPC: UEAScoresRes type + wrapper + handler
+  UEAScoreCards component + permissionError banner
+
+Phase 5 (new PS scripts, new permission: DeviceManagementServiceConfig.ReadWrite.All)
+  Get-AutopilotEvents.ps1
+  IPC: AutopilotEventsRes type + wrapper + handler
+  EnrollmentTrendChart component + permissionError banner
+```
+
+### Checklist
+
+**Phase 1 — OS Distribution + Enrollment Donut**
+- [x] `npm install recharts` in IntuneManagerUI/
+- [x] `Dashboard.tsx` — derive `osDistribution` from existing devices (parseOsBucket helper)
+- [x] `OsDistributionChart` component — Recharts `<BarChart layout="vertical">`
+- [x] `EnrollmentDonut` component — Recharts `<PieChart><Pie innerRadius...>`
+- [x] `npx tsc --noEmit` — 0 errors
+
+**Phase 2 — Security / Defender Posture**
+- [x] `Get-IntuneDevices.ps1` — add `deviceEnrollmentType,joinType` to `$select`
+- [x] `Get-IntuneDevices.ps1` — extract 7 Defender fields from `windowsProtectionState` block
+- [x] `src/types/ipc.ts` — add 7 fields to `DeviceItem`
+- [x] `SecurityPosturePanel` component — 4 stat tiles + device table
+- [x] Parse-check Get-IntuneDevices.ps1 — PASS
+- [x] `npx tsc --noEmit` — 0 errors
+
+**Phase 3 — App Install Health + Update Compliance**
+- [x] `Get-AppInstallStats.ps1` — fetch win32LobApp list; query installSummary per app (cap 50)
+- [x] `Get-UpdateStates.ps1` — beta endpoint windowsUpdateStates; return states + summary
+- [x] `src/types/ipc.ts` — AppInstallStat, AppInstallStatsRes, UpdateStateSummary, UpdateStateDevice, UpdateStatesRes
+- [x] `src/lib/ipc.ts` — ipcPsGetAppInstallStats, ipcPsGetUpdateStates wrappers
+- [x] `electron/ipc/ps-bridge.ts` — 2 new handlers
+- [x] `AppInstallHealthTable` component — sortable table with color-coded Success% column
+- [x] `UpdateComplianceChart` component — stacked BarChart per featureUpdateVersion
+- [x] Parse-check both PS scripts — PASS
+- [x] `npx tsc --noEmit` — 0 errors
+
+**Phase 4 — UEA Scores (requires UserExperienceAnalytics.Read.All)**
+- [x] `Get-UEAScores.ps1` — overview + deviceScores + appHealthApplicationPerformance
+- [x] `src/types/ipc.ts` — UEAOverview, UEAAppHealth, UEAScoresRes
+- [x] `src/lib/ipc.ts` — ipcPsGetUEAScores wrapper
+- [x] `electron/ipc/ps-bridge.ts` — handler
+- [x] `UEAScoreCards` component — 4 score ring SVGs + app health table
+- [x] Permission banner: renders when `permissionError: true`
+- [x] Parse-check — PASS
+- [x] `npx tsc --noEmit` — 0 errors
+
+**Phase 5 — Autopilot Events (requires DeviceManagementServiceConfig.ReadWrite.All)**
+- [x] `Get-AutopilotEvents.ps1` — autopilotEvents + daily bucketing
+- [x] `src/types/ipc.ts` — AutopilotEvent, AutopilotEventsRes
+- [x] `src/lib/ipc.ts` — ipcPsGetAutopilotEvents wrapper
+- [x] `electron/ipc/ps-bridge.ts` — handler
+- [x] `EnrollmentTrendChart` component — LineChart last 30 days success/failure series
+- [x] Permission banner
+- [x] Parse-check — PASS
+- [x] `npx tsc --noEmit` — 0 errors
+
+**Quality Gate**
+- [x] Peer review of all new PS scripts and Dashboard.tsx changes
+- [x] Fix all BLOCKING and MAJOR issues
+- [x] Post-flight review written
+- [x] `tasks/lessons.md` updated if new patterns captured
+
+---
+
+# Task: DB Caching — Dashboard & App Catalog (2026-04-02)
+
+## Pre-Flight Plan
+
+### Objective
+Add cache-first loading to all 6 Intune data fetches so that opening the Dashboard or App Catalog shows data instantly from SQLite, while a background refresh updates the data and streams new results to the page via IPC events.
+
+### Lessons Consulted
+- **Lesson 005:** IPC event ordering — use refs for cross-event data handoff; setState is async
+- **Lesson 008:** DB write errors wrapped in `catch { /* non-fatal */ }` can silently mask schema bugs
+
+### Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Background PS script fires after window close → `sendToRenderer` throws | Medium | High | Guard with `win.isDestroyed()` before every send |
+| Multiple concurrent `fetchSummary` calls corrupt the pending-refresh counter | Medium | Medium | Use `+=` not `=` when accumulating; accept spinner stays on slightly longer under race |
+| `saveCache` called on permission-error responses | Low | Low | All 6 handlers check `(data).success` before saving — permissionError responses have `success: false` |
+| Background refreshes write stale data if two run in parallel | Low | Low | SQLite write lock ensures no corruption; last write wins, which is acceptable for a cache |
+
+### Checklist
+
+- [x] `electron/ipc/ps-bridge.ts` — add `getCached`/`saveCache` helpers
+- [x] `electron/ipc/ps-bridge.ts` — wrap 6 handlers with cache-first + `setImmediate` background refresh
+- [x] `src/types/ipc.ts` — add `fromCache?: boolean` to 6 response interfaces
+- [x] `src/lib/ipc.ts` — update `ipcPsGetIntuneApps` return type to `IntuneAppsRes`
+- [x] `src/lib/ipc.ts` — add 6 `onCache*Updated` event subscription helpers
+- [x] `electron/ipc/settings.ts` — extend `clear-ai-cache` to also clear `cache_db_*` keys
+- [x] `src/pages/Dashboard.tsx` — add `backgroundRefreshing` state + `pendingCacheRefreshes` ref
+- [x] `src/pages/Dashboard.tsx` — extract 6 `apply*Result` useCallback processors
+- [x] `src/pages/Dashboard.tsx` — refactor `fetchSummary` to use processors + detect cache hits
+- [x] `src/pages/Dashboard.tsx` — add `useEffect` subscribing to 6 cache update events
+- [x] `src/pages/Dashboard.tsx` — show "↻ Refreshing..." in topbar while background refreshes run
+- [x] `npx tsc --noEmit` — 0 errors
+- [x] Peer review — PASS WITH REQUIRED FIXES (2 blocking bugs found and fixed)
+- [x] `npx tsc --noEmit` — 0 errors after fixes
+- [x] Push to develop + merge to master
+
+---
+
+## Post-Flight Review
+
+### Evidence of Correctness
+
+**TypeScript check (before implementation):**
+```
+npx tsc --noEmit → 0 errors
+```
+
+**TypeScript check (after peer review fixes):**
+```
+npx tsc --noEmit → 0 errors
+```
+
+**Commits:**
+- `6759834` — feat: add DB caching for Dashboard and App Catalog data
+- `3472c96` — fix: patch 2 blocking bugs found in peer review of DB caching
+
+### How the Cache Works
+
+```
+User opens Dashboard
+  ↓
+fetchSummary() fires all 6 ipcPsGet* calls in Promise.allSettled
+  ↓
+For each of the 6 IPC handlers in ps-bridge.ts:
+  → getCached(db, 'cache_db_<key>') — synchronous DB read (~1ms)
+  → If cache hit: return { ...cached, fromCache: true } immediately
+     AND setImmediate(async () => { runPsScript → saveCache → sendToRenderer })
+  → If no cache: runPsScript synchronously → saveCache → return
+  ↓
+Dashboard receives results (all 6 potentially from cache — instant)
+  ↓
+If any fromCache: pendingCacheRefreshes.current += N; setBackgroundRefreshing(true)
+Topbar shows "↻ Refreshing..."
+  ↓
+setImmediate callbacks complete (30–60s later):
+  → fresh data emitted via ipc:cache:*-updated events
+  → Dashboard useEffect handlers apply fresh data via apply*Result callbacks
+  → decrement(); when counter == 0: setBackgroundRefreshing(false)
+Topbar shows "Updated HH:MM:SS"
+```
+
+### Peer Review Results
+
+Initial peer review verdict: **FAIL** (3 blocking bugs, 4 major issues)
+
+| # | Severity | Issue | Status |
+|---|----------|-------|--------|
+| 1 | BLOCKING | `sendToRenderer` in setImmediate callbacks not guarded against destroyed window — throws if app closes during background refresh | Fixed: `sendToRenderer` now checks `win.isDestroyed()` |
+| 2 | BLOCKING | `pendingCacheRefreshes.current = cacheHits` overwrites counter — corrupted by sequential `fetchSummary` calls (manual refresh + 60s interval overlap) | Fixed: changed to `+=` |
+| 3 | BLOCKING | "Error responses emit and overwrite UI state" — reviewer's concern | **False positive**: `applyInstallResult` etc. check `data.success`/`data.permissionError` internally; error responses are safely ignored by apply functions; `decrement()` still fires to clear spinner. No change needed. |
+| 4 | MAJOR | Race: multiple concurrent background refreshes write same cache key | Known/accepted: SQLite write lock prevents corruption; last write wins (acceptable for cache); extremely rare to see two refreshes of the same key in-flight |
+| 5 | MAJOR | Event handlers for install/update/uea/autopilot don't check success before calling apply | **False positive**: same as #3 — apply functions check internally |
+| 6 | MAJOR | No AbortSignal passed to background runPsScript | Known/accepted: background PS processes will complete or time out naturally; fix would require a WeakRef to the win + AbortController wired to window close event (disproportionate complexity for this feature) |
+| 7 | MAJOR | fromCache flag not used to deduplicate | **False positive**: no deduplication needed; events arrive once per background refresh cycle |
+
+Post-fix verdict: **PASS** (0 blocking, 0 actionable major)
+
+### Side-Effect Audit
+
+| Change | Potential downstream impact | Status |
+|--------|----------------------------|--------|
+| `ipcPsGetIntuneApps` return type changed to `IntuneAppsRes` | `useAppCatalog.ts` uses `res.apps ?? []` — `fromCache?` is an ignored extra field. Safe. | ✅ Verified |
+| `sendToRenderer` now a 2-line function | All callers in `registerPsBridgeHandlers` scope still work. No external callers. | ✅ Verified |
+| `settings.ts` clear-ai-cache deletes `cache_db_*` | Previously only deleted `recommendations_cache`. Dashboard cache now also cleared from Settings. Expected and desired. | ✅ Intentional |
+| Dashboard `fetchSummary` now has 6 new useCallback deps | The callbacks are stable (empty dep arrays), so `fetchSummary` remains stable. The 60s interval useEffect won't re-register unnecessarily. | ✅ Verified |
+
+### Workflow Compliance
+- ✅ Lessons consulted at session start
+- ✅ Risk assessment written before implementation
+- ✅ IPC change sequence respected: types → lib/ipc.ts → electron handler
+- ✅ `npx tsc --noEmit` run and passed before peer review
+- ✅ Peer review subagent run; 2 blocking bugs found and fixed
+- ✅ Post-flight review written
+- ✅ `tasks/lessons.md` Lesson 009 written
+- ✅ Pushed to develop + merged to master
+
+---
+
+## New User Setup + Stale .js File Fix (2026-04-02)
+
+### Pre-Flight Plan
+
+**Objective:** When an admin creates a new user, that user should be required to change their password and optionally connect their tenant on first login, before reaching the dashboard.
+
+**Lessons Consulted:**
+- Lesson 001: Enhanced Workflow mandatory — Plan Mode, peer review, post-flight docs
+- Lesson 009: Cache-first IPC pattern, win.isDestroyed() guard
+
+**Risk Assessment:**
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Stale compiled .js files shadow .tsx source | **Confirmed bug** | Critical | Delete all .js files; add `noEmit: true` to tsconfig |
+| Redirect loop between /login and /new-user-setup | Low | High | Guard checks `location.pathname !== '/new-user-setup'` |
+| refreshSession() failure after password change logs user out | Low | Medium | RequireAuth redirects to /login — acceptable fallback |
+| Future `tsc` runs re-emit .js files | Medium | High | Fix both tsconfig.json and build script |
+
+### Implementation Checklist
+
+- [x] Root cause investigation — stale `.js` files in `src/` taking priority over `.tsx` source
+- [x] Add `"noEmit": true` to `tsconfig.json`
+- [x] Fix `package.json` build script: `tsc --noEmit` (was bare `tsc`)
+- [x] Delete all 25 stale `.js` files from `src/`
+- [x] Verify `src/contexts/AuthContext.tsx` — `login()` returns `user` object ✅ (done prev session)
+- [x] Verify `src/pages/Login.tsx` — redirects to `/new-user-setup` on `mustChangePassword` ✅ (done prev session)
+- [x] `src/App.tsx` — added `useLocation`, RequireAuth guard, `/new-user-setup` route
+- [x] `src/pages/NewUserSetup.tsx` — created: password change form + required tenant connect
+- [x] `npx tsc --noEmit` → 0 errors
+- [x] Peer review — no blocking issues
+- [x] Post-flight review written
+- [x] Lesson 010 written
+
+### Post-Flight Review
+
+**What worked:**
+- Entire new user setup feature was already correctly implemented in `.tsx` files; only needed the `.js` shadow files removed
+- `tsconfig.json` + `package.json` fix permanently prevents re-emission
+- Peer review found no blocking issues — only low-impact edge case warnings
+
+**Root cause summary:**
+The build script ran `tsc` (no `--noEmit`, no `outDir`), causing TypeScript to emit compiled `.js` files directly into `src/`. Vite's default extension resolution order prefers `.js` before `.tsx`, so ALL TypeScript source changes across every session were silently ignored — the app was running stale code throughout.
+
+**Peer review warnings (non-blocking):**
+- If `refreshSession()` fails after password change (e.g., token expired during the operation), `user` is set to null. `pwDone = true` still fires, but "Continue to Dashboard" will redirect to `/login` via RequireAuth — acceptable fallback.
+- Race condition: session expires in the ~1s between `ipcAuthChangePassword` success and `refreshSession()` call. 8-hour window makes this negligible.
+
+### Side-Effect Audit
+
+| Change | Potential downstream impact | Status |
+|--------|----------------------------|--------|
+| `tsconfig.json` noEmit: true | Prevents any future `tsc` from writing JS files. Type-checks still work. Vite is unaffected (uses esbuild). | ✅ Safe |
+| package.json build script fix | Production builds still type-check then bundle via Vite. No functional change. | ✅ Safe |
+| 25 `.js` files deleted | Vite now resolves all imports to `.tsx`/`.ts` source. All TypeScript changes (Dashboard v2, caching, new user setup) now actually run. | ✅ Intended |
+
+### Workflow Compliance
+- ✅ Lessons consulted at session start
+- ✅ Plan Mode entered — plan written and approved before implementation
+- ✅ `npx tsc --noEmit` passed after all changes
+- ✅ Peer review subagent run — no blocking issues
+- ✅ Post-flight review written
+- ✅ Lesson 010 written
+
+### Amendment — Tenant Connect Made Required (2026-04-02)
+
+**Change:** After user testing, tenant connect in the setup flow was changed from optional to required.
+
+**What changed in `src/pages/NewUserSetup.tsx`:**
+- Added local `tenantConnected` state (starts `false`, independent of global `tenant.isConnected` — prevents inheriting a prior admin's connection)
+- `handleConnect` sets `tenantConnected(true)` on success
+- Removed "Optional" badge from Step 2 header
+- "Continue to Dashboard" button now requires both `pwDone && tenantConnected`
+- Step 2 description updated to remove "skip this" wording
+
+**Why local state:** The global `useTenant().tenant.isConnected` reflects whatever tenant the admin last connected. A new user should always be prompted to connect their own account, never see Step 2 as pre-completed.
+
+**Status:** ✅ Verified working end-to-end. `npx tsc --noEmit` → 0 errors.
+
+---
+

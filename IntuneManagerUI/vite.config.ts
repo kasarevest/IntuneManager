@@ -12,7 +12,7 @@ export default defineConfig({
         entry: 'electron/main.ts',
         vite: {
           build: {
-            outDir: 'dist-electron',
+            outDir: 'builds/dist-electron',
             sourcemap: true,
             rollupOptions: {
               external: ['better-sqlite3', 'bcryptjs', 'electron', 'crypto', 'path', 'fs', 'child_process', 'os']
@@ -27,7 +27,7 @@ export default defineConfig({
         },
         vite: {
           build: {
-            outDir: 'dist-electron',
+            outDir: 'builds/dist-electron',
             sourcemap: true,
             rollupOptions: {
               external: ['electron']
@@ -44,6 +44,6 @@ export default defineConfig({
     }
   },
   build: {
-    outDir: 'dist'
+    outDir: 'builds/dist'
   }
 })

@@ -21,10 +21,11 @@ const SOURCE_BADGE: Record<string, { label: string; color: string }> = {
 }
 
 export default function LogPanel({ logs, height = 220, onClear }: LogPanelProps) {
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = bodyRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [logs.length])
 
   return (
@@ -37,7 +38,7 @@ export default function LogPanel({ logs, height = 220, onClear }: LogPanelProps)
           </button>
         )}
       </div>
-      <div style={styles.body} className="font-mono">
+      <div ref={bodyRef} style={styles.body} className="font-mono">
         {logs.length === 0 && (
           <span style={{ color: 'var(--text-500)', fontSize: 12 }}>No output yet...</span>
         )}
@@ -67,7 +68,6 @@ export default function LogPanel({ logs, height = 220, onClear }: LogPanelProps)
             </div>
           )
         })}
-        <div ref={bottomRef} />
       </div>
     </div>
   )

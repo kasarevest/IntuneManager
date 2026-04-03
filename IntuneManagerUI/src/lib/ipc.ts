@@ -4,13 +4,19 @@ import type {
   CreateUserReq, ChangePasswordReq,
   SaveSettingsReq,
   ConnectTenantRes, AuthStatusRes,
+  IntuneAppsRes,
   DeployAppReq, DeployAppRes,
   PackageOnlyReq, PackageOnlyRes,
   UploadOnlyReq, UploadOnlyRes,
   GetRecommendationsRes,
   ListPackagesRes,
   GetDevicesRes,
-  TriggerDeviceActionRes
+  TriggerDeviceActionRes,
+  AwsSsoLoginRes,
+  AppInstallStatsRes,
+  UpdateStatesRes,
+  UEAScoresRes,
+  AutopilotEventsRes
 } from '../types/ipc'
 import type { LogEntry } from '../types/app'
 
@@ -71,6 +77,9 @@ export interface SettingsGetRes {
   claudeApiKey?: string
   defaultMinOs?: string
   logRetentionDays?: number
+  awsRegion?: string
+  awsBedrockModelId?: string
+  claudeApiKeyConfigured?: boolean
   error?: string
 }
 
@@ -79,6 +88,9 @@ export const ipcSettingsGet = (): Promise<SettingsGetRes> =>
 
 export const ipcSettingsSave = (req: SaveSettingsReq): Promise<{ success: boolean; error?: string }> =>
   api.invoke('ipc:settings:save', req) as Promise<{ success: boolean; error?: string }>
+
+export const ipcSettingsClearAiCache = (): Promise<{ success: boolean; error?: string }> =>
+  api.invoke('ipc:settings:clear-ai-cache') as Promise<{ success: boolean; error?: string }>
 
 // --- PS Bridge / Tenant ---
 export const ipcPsGetTenantConfig = (): Promise<AuthStatusRes> =>
@@ -90,8 +102,8 @@ export const ipcPsConnectTenant = (useDeviceCode: boolean): Promise<ConnectTenan
 export const ipcPsDisconnectTenant = (): Promise<{ success: boolean }> =>
   api.invoke('ipc:ps:disconnect-tenant') as Promise<{ success: boolean }>
 
-export const ipcPsGetIntuneApps = (): Promise<{ success: boolean; apps?: unknown[]; error?: string }> =>
-  api.invoke('ipc:ps:get-intune-apps') as Promise<{ success: boolean; apps?: unknown[]; error?: string }>
+export const ipcPsGetIntuneApps = (): Promise<IntuneAppsRes> =>
+  api.invoke('ipc:ps:get-intune-apps') as Promise<IntuneAppsRes>
 
 export const ipcPsGetPackageSettings = (appName: string, sourceRootPath?: string): Promise<{ success: boolean; version?: string; wingetId?: string; sourceFolder?: string; error?: string }> =>
   api.invoke('ipc:ps:get-package-settings', { appName, sourceRootPath }) as Promise<{ success: boolean; version?: string; wingetId?: string; sourceFolder?: string; error?: string }>
@@ -133,6 +145,23 @@ export const ipcPsTriggerDriverUpdate = (deviceId: string): Promise<TriggerDevic
 export const ipcPsDownloadDiagnostics = (deviceId: string, deviceName: string): Promise<TriggerDeviceActionRes> =>
   api.invoke('ipc:ps:download-diagnostics', { deviceId, deviceName }) as Promise<TriggerDeviceActionRes>
 
+// --- Dashboard v2 data sources ---
+export const ipcPsGetAppInstallStats = (): Promise<AppInstallStatsRes> =>
+  api.invoke('ipc:ps:get-app-install-stats') as Promise<AppInstallStatsRes>
+
+export const ipcPsGetUpdateStates = (): Promise<UpdateStatesRes> =>
+  api.invoke('ipc:ps:get-update-states') as Promise<UpdateStatesRes>
+
+export const ipcPsGetUEAScores = (): Promise<UEAScoresRes> =>
+  api.invoke('ipc:ps:get-uea-scores') as Promise<UEAScoresRes>
+
+export const ipcPsGetAutopilotEvents = (): Promise<AutopilotEventsRes> =>
+  api.invoke('ipc:ps:get-autopilot-events') as Promise<AutopilotEventsRes>
+
+// --- AWS ---
+export const ipcAwsSsoLogin = (profile?: string): Promise<AwsSsoLoginRes> =>
+  api.invoke('ipc:aws:sso-login', { profile }) as Promise<AwsSsoLoginRes>
+
 // --- Event subscriptions ---
 export const onJobLog = (callback: (data: LogEntry) => void): (() => void) =>
   api.on('job:log', callback as (data: unknown) => void)
@@ -148,3 +177,22 @@ export const onJobError = (callback: (data: { jobId: string; error: string; phas
 
 export const onJobPackageComplete = (callback: (data: { jobId: string; intunewinPath: string | null; packageSettings: Record<string, unknown> | null }) => void): (() => void) =>
   api.on('job:package-complete', callback as (data: unknown) => void)
+
+// --- Cache update events (background refresh notifications) ---
+export const onCacheAppsUpdated = (cb: (data: IntuneAppsRes) => void): (() => void) =>
+  api.on('ipc:cache:apps-updated', cb as (data: unknown) => void)
+
+export const onCacheDevicesUpdated = (cb: (data: GetDevicesRes) => void): (() => void) =>
+  api.on('ipc:cache:devices-updated', cb as (data: unknown) => void)
+
+export const onCacheInstallStatsUpdated = (cb: (data: AppInstallStatsRes) => void): (() => void) =>
+  api.on('ipc:cache:install-stats-updated', cb as (data: unknown) => void)
+
+export const onCacheUpdateStatesUpdated = (cb: (data: UpdateStatesRes) => void): (() => void) =>
+  api.on('ipc:cache:update-states-updated', cb as (data: unknown) => void)
+
+export const onCacheUEAScoresUpdated = (cb: (data: UEAScoresRes) => void): (() => void) =>
+  api.on('ipc:cache:uea-scores-updated', cb as (data: unknown) => void)
+
+export const onCacheAutopilotEventsUpdated = (cb: (data: AutopilotEventsRes) => void): (() => void) =>
+  api.on('ipc:cache:autopilot-events-updated', cb as (data: unknown) => void)
