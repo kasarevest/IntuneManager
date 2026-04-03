@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
-import { createDatabase } from './db'
+import prisma from './db'
 import { initializeAuth } from './routes/auth'
 import authRouter from './routes/auth'
 import settingsRouter from './routes/settings'
@@ -18,16 +18,6 @@ if (!process.env.APP_SECRET_KEY) {
 }
 
 const app = express()
-const db = createDatabase()
-
-// Make db available to routes
-app.locals.db = db
-
-// Initialize auth (create default admin if needed)
-initializeAuth(db)
-
-// Clean up expired sessions on startup
-try { db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run() } catch { /* non-fatal */ }
 
 app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:4173'] }))
 app.use(express.json({ limit: '10mb' }))
@@ -40,4 +30,14 @@ app.use(settingsRouter)
 app.use(psRouter)
 app.use(aiRouter)
 
-app.listen(PORT, () => console.log(`IntuneManager server running on port ${PORT}`))
+;(async () => {
+  // Initialize auth (create default admin if needed)
+  await initializeAuth(prisma)
+
+  // Clean up expired sessions on startup
+  try {
+    await prisma.session.deleteMany({ where: { expires_at: { lt: new Date() } } })
+  } catch { /* non-fatal */ }
+
+  app.listen(PORT, () => console.log(`IntuneManager server running on port ${PORT}`))
+})()

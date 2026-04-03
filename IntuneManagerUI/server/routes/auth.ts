@@ -1,8 +1,9 @@
 import { Router } from 'express'
 import crypto from 'crypto'
 import bcrypt from 'bcryptjs'
-import type { Database } from 'better-sqlite3'
+import { PrismaClient } from '@prisma/client'
 import { requireAuth, signToken, AuthenticatedRequest } from '../middleware/auth'
+import prisma from '../db'
 
 const router = Router()
 
@@ -19,15 +20,19 @@ function generatePassword(length = 16): string {
 let pendingFirstRunPassword: string | null = null
 let isFirstRun = false
 
-export function initializeAuth(db: Database): void {
-  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get('admin')
+export async function initializeAuth(prismaClient: PrismaClient): Promise<void> {
+  const existing = await prismaClient.user.findUnique({ where: { username: 'admin' } })
   if (!existing) {
     const password = generatePassword(16)
     const hash = bcrypt.hashSync(password, 12)
-    db.prepare(`
-      INSERT INTO users (username, password_hash, role, must_change_password)
-      VALUES (?, ?, 'superadmin', 0)
-    `).run('admin', hash)
+    await prismaClient.user.create({
+      data: {
+        username: 'admin',
+        password_hash: hash,
+        role: 'superadmin',
+        must_change_password: 0
+      }
+    })
     pendingFirstRunPassword = password
     isFirstRun = true
   }
@@ -55,21 +60,20 @@ router.post('/api/auth/first-run-complete', (_req, res) => {
 })
 
 // POST /api/auth/login
-router.post('/api/auth/login', (req, res) => {
+router.post('/api/auth/login', async (req, res) => {
   try {
-    const db = req.app.locals.db as Database
     const { username, password } = req.body as { username: string; password: string }
 
-    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as {
-      id: number; username: string; password_hash: string; role: string; must_change_password: number
-    } | undefined
+    const user = await prisma.user.findFirst({
+      where: { username }
+    })
 
     if (!user) { res.json({ success: false, error: 'Invalid username or password' }); return }
     if (!bcrypt.compareSync(password, user.password_hash)) {
       res.json({ success: false, error: 'Invalid username or password' }); return
     }
 
-    db.prepare('UPDATE users SET last_login = ? WHERE id = ?').run(new Date().toISOString(), user.id)
+    await prisma.user.update({ where: { id: user.id }, data: { last_login: new Date() } })
 
     const token = signToken({ id: user.id, username: user.username, role: user.role })
 
@@ -104,15 +108,15 @@ router.get('/api/auth/validate-session', requireAuth as import('express').Reques
 })
 
 // GET /api/auth/users
-router.get('/api/auth/users', requireAuth as import('express').RequestHandler, (req, res) => {
+router.get('/api/auth/users', requireAuth as import('express').RequestHandler, async (req, res) => {
   try {
     const authReq = req as AuthenticatedRequest
     if (authReq.user?.role !== 'superadmin') { res.status(403).json({ success: false, error: 'Insufficient permissions' }); return }
 
-    const db = req.app.locals.db as Database
-    const users = db.prepare(`
-      SELECT id, username, role, created_at, last_login FROM users ORDER BY created_at
-    `).all()
+    const users = await prisma.user.findMany({
+      select: { id: true, username: true, role: true, created_at: true, last_login: true },
+      orderBy: { created_at: 'asc' }
+    })
     res.json({ success: true, users })
   } catch (err) {
     res.json({ success: false, error: (err as Error).message })
@@ -120,29 +124,29 @@ router.get('/api/auth/users', requireAuth as import('express').RequestHandler, (
 })
 
 // POST /api/auth/users
-router.post('/api/auth/users', requireAuth as import('express').RequestHandler, (req, res) => {
+router.post('/api/auth/users', requireAuth as import('express').RequestHandler, async (req, res) => {
   try {
     const authReq = req as AuthenticatedRequest
     if (authReq.user?.role !== 'superadmin') { res.status(403).json({ success: false, error: 'Insufficient permissions' }); return }
 
-    const db = req.app.locals.db as Database
     const { username, password, role } = req.body as { username: string; password: string; role: string }
 
     const hash = bcrypt.hashSync(password, 12)
-    const result = db.prepare(`
-      INSERT INTO users (username, password_hash, role, must_change_password)
-      VALUES (?, ?, ?, 1)
-    `).run(username, hash, role)
-    res.json({ success: true, userId: result.lastInsertRowid })
+    const newUser = await prisma.user.create({
+      data: { username, password_hash: hash, role, must_change_password: 1 }
+    })
+    res.json({ success: true, userId: newUser.id })
   } catch (err) {
     const msg = (err as Error).message
-    if (msg.includes('UNIQUE')) { res.json({ success: false, error: 'Username already exists' }); return }
+    if (msg.includes('Unique constraint') || msg.includes('UNIQUE')) {
+      res.json({ success: false, error: 'Username already exists' }); return
+    }
     res.json({ success: false, error: msg })
   }
 })
 
 // DELETE /api/auth/users/:id
-router.delete('/api/auth/users/:id', requireAuth as import('express').RequestHandler, (req, res) => {
+router.delete('/api/auth/users/:id', requireAuth as import('express').RequestHandler, async (req, res) => {
   try {
     const authReq = req as AuthenticatedRequest
     if (authReq.user?.role !== 'superadmin') { res.status(403).json({ success: false, error: 'Insufficient permissions' }); return }
@@ -150,8 +154,7 @@ router.delete('/api/auth/users/:id', requireAuth as import('express').RequestHan
     const userId = parseInt(String(req.params.id), 10)
     if (authReq.user?.id === userId) { res.json({ success: false, error: 'Cannot delete your own account' }); return }
 
-    const db = req.app.locals.db as Database
-    db.prepare('DELETE FROM users WHERE id = ?').run(userId)
+    await prisma.user.delete({ where: { id: userId } })
     res.json({ success: true })
   } catch (err) {
     res.json({ success: false, error: (err as Error).message })
@@ -159,21 +162,20 @@ router.delete('/api/auth/users/:id', requireAuth as import('express').RequestHan
 })
 
 // POST /api/auth/change-password
-router.post('/api/auth/change-password', requireAuth as import('express').RequestHandler, (req, res) => {
+router.post('/api/auth/change-password', requireAuth as import('express').RequestHandler, async (req, res) => {
   try {
     const authReq = req as AuthenticatedRequest
     if (!authReq.user) { res.json({ success: false, error: 'Invalid session' }); return }
 
-    const db = req.app.locals.db as Database
     const { currentPassword, newPassword } = req.body as { currentPassword: string; newPassword: string }
 
-    const user = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(authReq.user.id) as { password_hash: string }
-    if (!bcrypt.compareSync(currentPassword, user.password_hash)) {
+    const user = await prisma.user.findUnique({ where: { id: authReq.user.id } })
+    if (!user || !bcrypt.compareSync(currentPassword, user.password_hash)) {
       res.json({ success: false, error: 'Current password is incorrect' }); return
     }
 
     const newHash = bcrypt.hashSync(newPassword, 12)
-    db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(newHash, authReq.user.id)
+    await prisma.user.update({ where: { id: authReq.user.id }, data: { password_hash: newHash, must_change_password: 0 } })
     res.json({ success: true })
   } catch (err) {
     res.json({ success: false, error: (err as Error).message })

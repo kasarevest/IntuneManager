@@ -1,22 +1,21 @@
 import { Router } from 'express'
 import { spawn } from 'child_process'
 import fs from 'fs'
-import type { Database } from 'better-sqlite3'
 import { requireAuth } from '../middleware/auth'
 import { runPsScript, getCached, saveCache } from '../services/ps-bridge'
 import { sseManager } from '../sse'
+import prisma from '../db'
 
 const router = Router()
 
 const sendToRenderer = (channel: string, data: unknown) => sseManager.broadcast(channel, data)
 
 // GET /api/ps/tenant-config
-router.get('/api/ps/tenant-config', requireAuth as import('express').RequestHandler, (req, res) => {
+router.get('/api/ps/tenant-config', requireAuth as import('express').RequestHandler, async (req, res) => {
   try {
-    const db = req.app.locals.db as Database
-    const row = db.prepare('SELECT * FROM tenant_config WHERE id = 1').get() as Record<string, unknown> | undefined
+    const row = await prisma.tenantConfig.findUnique({ where: { id: 1 } })
     if (!row || !row.username) { res.json({ isConnected: false }); return }
-    const expiry = row.token_expiry ? new Date(row.token_expiry as string) : null
+    const expiry = row.token_expiry ? new Date(row.token_expiry) : null
     const expiresInMinutes = expiry ? Math.round((expiry.getTime() - Date.now()) / 60000) : undefined
     res.json({ isConnected: true, username: row.username, tenantId: row.tenant_id, expiresInMinutes })
   } catch {
@@ -26,7 +25,6 @@ router.get('/api/ps/tenant-config', requireAuth as import('express').RequestHand
 
 // POST /api/ps/connect-tenant
 router.post('/api/ps/connect-tenant', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
   const { useDeviceCode } = req.body as { useDeviceCode?: boolean }
   const args = useDeviceCode ? ['-DeviceCode'] : []
   const result = await runPsScript('Connect-Tenant.ps1', args, undefined, undefined, true)
@@ -34,10 +32,21 @@ router.post('/api/ps/connect-tenant', requireAuth as import('express').RequestHa
   if ((r as Record<string, unknown>).success) {
     try {
       const rr = r as Record<string, unknown>
-      db.prepare(`INSERT OR REPLACE INTO tenant_config
-        (id, tenant_id, username, token_expiry, connected_at, updated_at)
-        VALUES (1, ?, ?, ?, datetime('now'), datetime('now'))`)
-        .run(rr.tenantId ?? null, rr.username ?? null, rr.tokenExpiry ?? null)
+      await prisma.tenantConfig.upsert({
+        where: { id: 1 },
+        update: {
+          tenant_id: (rr.tenantId as string) ?? null,
+          username: (rr.username as string) ?? null,
+          token_expiry: (rr.tokenExpiry as string) ?? null,
+          updated_at: new Date()
+        },
+        create: {
+          id: 1,
+          tenant_id: (rr.tenantId as string) ?? null,
+          username: (rr.username as string) ?? null,
+          token_expiry: (rr.tokenExpiry as string) ?? null
+        }
+      })
     } catch { /* non-fatal */ }
   }
   res.json(r)
@@ -45,8 +54,7 @@ router.post('/api/ps/connect-tenant', requireAuth as import('express').RequestHa
 
 // DELETE /api/ps/tenant
 router.delete('/api/ps/tenant', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
-  try { db.prepare('DELETE FROM tenant_config WHERE id = 1').run() } catch { /* non-fatal */ }
+  try { await prisma.tenantConfig.deleteMany({ where: { id: 1 } }) } catch { /* non-fatal */ }
   const result = await runPsScript('Disconnect-Tenant.ps1', [])
   res.json(result.result ?? { success: true })
 })
@@ -59,15 +67,14 @@ router.get('/api/ps/auth-status', requireAuth as import('express').RequestHandle
 
 // GET /api/ps/intune-apps
 router.get('/api/ps/intune-apps', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
   const cacheKey = 'cache_db_apps'
-  const cached = getCached(db, cacheKey)
+  const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
         const r = await runPsScript('Get-IntuneApps.ps1', [])
         const fresh = r.result ?? { success: false, error: 'No result from PS script' }
-        if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+        if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:apps-updated', fresh)
       } catch (e) { sendToRenderer('ipc:cache:apps-updated', { success: false, error: String(e) }) }
     })
@@ -75,21 +82,20 @@ router.get('/api/ps/intune-apps', requireAuth as import('express').RequestHandle
   }
   const result = await runPsScript('Get-IntuneApps.ps1', [])
   const data = result.result ?? { success: false, error: 'No result from PS script' }
-  if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+  if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
 })
 
 // GET /api/ps/devices
 router.get('/api/ps/devices', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
   const cacheKey = 'cache_db_devices'
-  const cached = getCached(db, cacheKey)
+  const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
         const r = await runPsScript('Get-IntuneDevices.ps1', [])
         const fresh = r.result ?? { success: false, devices: [], error: 'No result from PS script' }
-        if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+        if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:devices-updated', fresh)
       } catch (e) { sendToRenderer('ipc:cache:devices-updated', { success: false, devices: [], error: String(e) }) }
     })
@@ -97,7 +103,7 @@ router.get('/api/ps/devices', requireAuth as import('express').RequestHandler, a
   }
   const result = await runPsScript('Get-IntuneDevices.ps1', [])
   const data = result.result ?? { success: false, devices: [], error: 'No result from PS script' }
-  if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+  if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
 })
 
@@ -193,13 +199,12 @@ router.get('/api/ps/package-settings', requireAuth as import('express').RequestH
 
 // GET /api/ps/list-packages
 router.get('/api/ps/list-packages', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
-  const getRow = (key: string) => {
-    const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
+  const getRow = async (key: string) => {
+    const row = await prisma.appSetting.findUnique({ where: { key } })
     return row?.value || ''
   }
-  const outputFolder = getRow('output_folder_path')
-  const sourceRootPath = getRow('source_root_path')
+  const outputFolder = await getRow('output_folder_path')
+  const sourceRootPath = await getRow('source_root_path')
   const args = []
   if (outputFolder) args.push('-OutputFolder', outputFolder)
   if (sourceRootPath) args.push('-SourceRootPath', sourceRootPath)
@@ -243,15 +248,14 @@ router.post('/api/ps/write-script', requireAuth as import('express').RequestHand
 
 // GET /api/ps/app-install-stats
 router.get('/api/ps/app-install-stats', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
   const cacheKey = 'cache_db_install_stats'
-  const cached = getCached(db, cacheKey)
+  const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
         const r = await runPsScript('Get-AppInstallStats.ps1', [])
         const fresh = r.result ?? { success: false, apps: [], error: 'No result from PS script' }
-        if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+        if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:install-stats-updated', fresh)
       } catch (e) { sendToRenderer('ipc:cache:install-stats-updated', { success: false, apps: [], error: String(e) }) }
     })
@@ -259,21 +263,20 @@ router.get('/api/ps/app-install-stats', requireAuth as import('express').Request
   }
   const result = await runPsScript('Get-AppInstallStats.ps1', [])
   const data = result.result ?? { success: false, apps: [], error: 'No result from PS script' }
-  if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+  if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
 })
 
 // GET /api/ps/update-states
 router.get('/api/ps/update-states', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
   const cacheKey = 'cache_db_update_states'
-  const cached = getCached(db, cacheKey)
+  const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
         const r = await runPsScript('Get-UpdateStates.ps1', [])
         const fresh = r.result ?? { success: false, summary: {}, states: [], error: 'No result from PS script' }
-        if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+        if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:update-states-updated', fresh)
       } catch (e) { sendToRenderer('ipc:cache:update-states-updated', { success: false, summary: {}, states: [], error: String(e) }) }
     })
@@ -281,21 +284,20 @@ router.get('/api/ps/update-states', requireAuth as import('express').RequestHand
   }
   const result = await runPsScript('Get-UpdateStates.ps1', [])
   const data = result.result ?? { success: false, summary: {}, states: [], error: 'No result from PS script' }
-  if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+  if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
 })
 
 // GET /api/ps/uea-scores
 router.get('/api/ps/uea-scores', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
   const cacheKey = 'cache_db_uea_scores'
-  const cached = getCached(db, cacheKey)
+  const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
         const r = await runPsScript('Get-UEAScores.ps1', [])
         const fresh = r.result ?? { success: false, overview: null, appHealth: [], error: 'No result from PS script' }
-        if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+        if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:uea-scores-updated', fresh)
       } catch (e) { sendToRenderer('ipc:cache:uea-scores-updated', { success: false, overview: null, appHealth: [], error: String(e) }) }
     })
@@ -303,21 +305,20 @@ router.get('/api/ps/uea-scores', requireAuth as import('express').RequestHandler
   }
   const result = await runPsScript('Get-UEAScores.ps1', [])
   const data = result.result ?? { success: false, overview: null, appHealth: [], error: 'No result from PS script' }
-  if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+  if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
 })
 
 // GET /api/ps/autopilot-events
 router.get('/api/ps/autopilot-events', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
   const cacheKey = 'cache_db_autopilot_events'
-  const cached = getCached(db, cacheKey)
+  const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
         const r = await runPsScript('Get-AutopilotEvents.ps1', [])
         const fresh = r.result ?? { success: false, events: [], error: 'No result from PS script' }
-        if ((fresh as Record<string, unknown>).success) saveCache(db, cacheKey, fresh as Record<string, unknown>)
+        if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:autopilot-events-updated', fresh)
       } catch (e) { sendToRenderer('ipc:cache:autopilot-events-updated', { success: false, events: [], error: String(e) }) }
     })
@@ -325,7 +326,7 @@ router.get('/api/ps/autopilot-events', requireAuth as import('express').RequestH
   }
   const result = await runPsScript('Get-AutopilotEvents.ps1', [])
   const data = result.result ?? { success: false, events: [], error: 'No result from PS script' }
-  if ((data as Record<string, unknown>).success) saveCache(db, cacheKey, data as Record<string, unknown>)
+  if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
 })
 

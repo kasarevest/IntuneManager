@@ -1,7 +1,6 @@
 import { Router } from 'express'
 import Anthropic from '@anthropic-ai/sdk'
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
-import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import path from 'path'
 import fs from 'fs'
@@ -10,6 +9,7 @@ import { requireAuth } from '../middleware/auth'
 import { decrypt } from '../services/encryption'
 import { runPsScript } from '../services/ps-bridge'
 import { sseManager } from '../sse'
+import prisma from '../db'
 
 const router = Router()
 
@@ -20,14 +20,14 @@ interface ClientBundle {
   model: string
 }
 
-function createClient(db: Database): ClientBundle {
-  const getRow = (key: string) => {
-    const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
+async function createClient(): Promise<ClientBundle> {
+  const getRow = async (key: string) => {
+    const row = await prisma.appSetting.findUnique({ where: { key } })
     return row?.value ?? ''
   }
 
-  const awsRegion = getRow('aws_region')
-  const bedrockModelId = getRow('aws_bedrock_model_id')
+  const awsRegion = await getRow('aws_region')
+  const bedrockModelId = await getRow('aws_bedrock_model_id')
 
   if (awsRegion && bedrockModelId) {
     return {
@@ -36,7 +36,7 @@ function createClient(db: Database): ClientBundle {
     }
   }
 
-  const apiKeyRow = db.prepare("SELECT value FROM app_settings WHERE key = 'claude_api_key_encrypted'").get() as { value: string } | undefined
+  const apiKeyRow = await prisma.appSetting.findUnique({ where: { key: 'claude_api_key_encrypted' } })
   const apiKey = apiKeyRow ? decrypt(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
   return {
     client: new Anthropic({ apiKey }),
@@ -44,26 +44,26 @@ function createClient(db: Database): ClientBundle {
   }
 }
 
-function assertClientConfigured(db: Database): ClientBundle {
-  const getRow = (key: string) => {
-    const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
+async function assertClientConfigured(): Promise<ClientBundle> {
+  const getRow = async (key: string) => {
+    const row = await prisma.appSetting.findUnique({ where: { key } })
     return row?.value ?? ''
   }
-  const awsRegion = getRow('aws_region')
-  const bedrockModelId = getRow('aws_bedrock_model_id')
+  const awsRegion = await getRow('aws_region')
+  const bedrockModelId = await getRow('aws_bedrock_model_id')
 
   if (awsRegion && !bedrockModelId) {
     throw new Error('Bedrock Model ID is required. Go to Settings → General and enter the Bedrock Model ID (e.g. anthropic.claude-3-5-sonnet-20241022-v2:0).')
   }
 
   if (!awsRegion) {
-    const apiKeyRow = db.prepare("SELECT value FROM app_settings WHERE key = 'claude_api_key_encrypted'").get() as { value: string } | undefined
+    const apiKeyRow = await prisma.appSetting.findUnique({ where: { key: 'claude_api_key_encrypted' } })
     const apiKey = apiKeyRow ? decrypt(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
     if (!apiKey) {
       throw new Error('No Claude connection configured. Go to Settings → General and configure AWS Bedrock (SSO) or an Anthropic API key.')
     }
   }
-  return createClient(db)
+  return createClient()
 }
 
 interface ActiveJob {
@@ -294,8 +294,7 @@ async function executeToolCall(
   toolName: string,
   input: Record<string, unknown>,
   jobId: string,
-  sendEvent: (channel: string, data: unknown) => void,
-  db: Database
+  sendEvent: (channel: string, data: unknown) => void
 ): Promise<unknown> {
   const log = (msg: string, level = 'INFO', source: 'ai' | 'ps' | 'system' = 'system') => {
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
@@ -385,7 +384,7 @@ async function executeToolCall(
     }
 
     case 'build_package': {
-      const toolRow = db.prepare("SELECT value FROM app_settings WHERE key = 'intunewin_tool_path'").get() as { value: string } | undefined
+      const toolRow = await prisma.appSetting.findUnique({ where: { key: 'intunewin_tool_path' } })
       const toolPath = toolRow?.value || ''
       const args = [
         '-SourceFolder', String(input.source_folder),
@@ -686,8 +685,7 @@ async function runDeployJob(
   jobId: string,
   req: { userRequest: string; isUpdate?: boolean; existingAppId?: string },
   signal: AbortSignal,
-  sendEvent: (channel: string, data: unknown) => void,
-  db: Database
+  sendEvent: (channel: string, data: unknown) => void
 ): Promise<void> {
   const log = (msg: string, level = 'INFO', source: 'ai' | 'ps' | 'system' = 'ai') => {
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
@@ -698,15 +696,15 @@ async function runDeployJob(
     sendEvent('job:phase-change', { jobId, phase, label })
   }
 
-  const { client, model } = assertClientConfigured(db)
+  const { client, model } = await assertClientConfigured()
   const isBedrockClient = client instanceof AnthropicBedrock
 
-  const getSettingRow = (key: string, fallback: string) => {
-    const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
+  const getSettingRow = async (key: string, fallback: string) => {
+    const row = await prisma.appSetting.findUnique({ where: { key } })
     return row?.value || fallback
   }
-  const sourceRoot = getSettingRow('source_root_path', path.join(__dirname, '..', '..', '..', 'Source'))
-  const outputFolder = getSettingRow('output_folder_path', path.join(__dirname, '..', '..', '..', 'Output'))
+  const sourceRoot = await getSettingRow('source_root_path', path.join(__dirname, '..', '..', '..', 'Source'))
+  const outputFolder = await getSettingRow('output_folder_path', path.join(__dirname, '..', '..', '..', 'Output'))
 
   const pathContext = `\n\nPATH CONFIGURATION (use these exact paths):
 - Source root: ${sourceRoot}  →  Create app subfolder here (e.g. ${sourceRoot}\\SevenZip)
@@ -762,7 +760,7 @@ async function runDeployJob(
       log(`Tool: ${block.name}`, 'INFO', 'system')
 
       try {
-        const result = await executeToolCall(block.name, block.input as Record<string, unknown>, jobId, sendEvent, db)
+        const result = await executeToolCall(block.name, block.input as Record<string, unknown>, jobId, sendEvent)
         toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) })
       } catch (err) {
         const errMsg = (err as Error).message
@@ -785,8 +783,7 @@ async function runUploadOnlyJob(
   jobId: string,
   req: { intunewinPath: string; packageSettings: Record<string, unknown> },
   signal: AbortSignal,
-  sendEvent: (channel: string, data: unknown) => void,
-  db: Database
+  sendEvent: (channel: string, data: unknown) => void
 ): Promise<void> {
   const log = (msg: string, level = 'INFO', source: 'ai' | 'ps' | 'system' = 'system') => {
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
@@ -830,7 +827,7 @@ async function runUploadOnlyJob(
     minimum_os: ps.min_os ?? 'W10_21H2',
     detect_script_name: detectScriptName,
     detect_script_content_base64: detectScriptB64
-  }, jobId, sendEvent, db) as { success?: boolean; appId?: string; error?: string }
+  }, jobId, sendEvent) as { success?: boolean; appId?: string; error?: string }
 
   if (!createResult.success) {
     throw new Error(`Failed to create Intune app: ${createResult.error ?? 'unknown error'}`)
@@ -848,7 +845,7 @@ async function runUploadOnlyJob(
   const uploadResult = await executeToolCall('upload_to_intune', {
     app_id: appId,
     intunewin_path: req.intunewinPath
-  }, jobId, sendEvent, db) as { success?: boolean; error?: string }
+  }, jobId, sendEvent) as { success?: boolean; error?: string }
 
   if (!uploadResult.success) {
     throw new Error(`Upload failed: ${uploadResult.error ?? 'unknown error'}`)
@@ -897,8 +894,7 @@ async function runPackageOnlyJob(
   jobId: string,
   req: { userRequest: string },
   signal: AbortSignal,
-  sendEvent: (channel: string, data: unknown) => void,
-  db: Database
+  sendEvent: (channel: string, data: unknown) => void
 ): Promise<void> {
   const log = (msg: string, level = 'INFO', source: 'ai' | 'ps' | 'system' = 'ai') => {
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
@@ -909,15 +905,15 @@ async function runPackageOnlyJob(
     sendEvent('job:phase-change', { jobId, phase, label })
   }
 
-  const { client, model } = assertClientConfigured(db)
+  const { client, model } = await assertClientConfigured()
   const isBedrockClient = client instanceof AnthropicBedrock
 
-  const getSettingRow = (key: string, fallback: string) => {
-    const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
+  const getSettingRow = async (key: string, fallback: string) => {
+    const row = await prisma.appSetting.findUnique({ where: { key } })
     return row?.value || fallback
   }
-  const sourceRoot = getSettingRow('source_root_path', path.join(__dirname, '..', '..', '..', 'Source'))
-  const outputFolder = getSettingRow('output_folder_path', path.join(__dirname, '..', '..', '..', 'Output'))
+  const sourceRoot = await getSettingRow('source_root_path', path.join(__dirname, '..', '..', '..', 'Source'))
+  const outputFolder = await getSettingRow('output_folder_path', path.join(__dirname, '..', '..', '..', 'Output'))
 
   const pathContext = `\n\nPATH CONFIGURATION (use these exact paths):
 - Source root: ${sourceRoot}  →  Create app subfolder here (e.g. ${sourceRoot}\\SevenZip)
@@ -975,7 +971,7 @@ async function runPackageOnlyJob(
       log(`Tool: ${block.name}`, 'INFO', 'system')
 
       try {
-        const result = await executeToolCall(block.name, block.input as Record<string, unknown>, jobId, sendEvent, db)
+        const result = await executeToolCall(block.name, block.input as Record<string, unknown>, jobId, sendEvent)
         if (block.name === 'generate_package_settings') {
           capturedPackageSettings = block.input as Record<string, unknown>
         }
@@ -1003,7 +999,6 @@ async function runPackageOnlyJob(
 
 // POST /api/ai/deploy
 router.post('/api/ai/deploy', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
   const body = req.body as {
     userRequest: string
     isUpdate?: boolean
@@ -1017,7 +1012,7 @@ router.post('/api/ai/deploy', requireAuth as import('express').RequestHandler, a
 
   const sendEvent = (channel: string, data: unknown) => sseManager.broadcast(channel, data)
 
-  runDeployJob(jobId, body, abortController.signal, sendEvent, db).catch(err => {
+  runDeployJob(jobId, body, abortController.signal, sendEvent).catch(err => {
     sendEvent('job:error', { jobId, error: (err as Error).message, phase: 'unknown' })
   }).finally(() => {
     activeJobs.delete(jobId)
@@ -1028,7 +1023,6 @@ router.post('/api/ai/deploy', requireAuth as import('express').RequestHandler, a
 
 // POST /api/ai/package-only
 router.post('/api/ai/package-only', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
   const body = req.body as {
     userRequest: string
     jobId?: string
@@ -1040,7 +1034,7 @@ router.post('/api/ai/package-only', requireAuth as import('express').RequestHand
 
   const sendEvent = (channel: string, data: unknown) => sseManager.broadcast(channel, data)
 
-  runPackageOnlyJob(jobId, body, abortController.signal, sendEvent, db).catch(err => {
+  runPackageOnlyJob(jobId, body, abortController.signal, sendEvent).catch(err => {
     sendEvent('job:error', { jobId, error: (err as Error).message, phase: 'unknown' })
   }).finally(() => {
     activeJobs.delete(jobId)
@@ -1051,7 +1045,6 @@ router.post('/api/ai/package-only', requireAuth as import('express').RequestHand
 
 // POST /api/ai/upload-only
 router.post('/api/ai/upload-only', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
   const body = req.body as {
     intunewinPath: string
     packageSettings: Record<string, unknown>
@@ -1064,7 +1057,7 @@ router.post('/api/ai/upload-only', requireAuth as import('express').RequestHandl
 
   const sendEvent = (channel: string, data: unknown) => sseManager.broadcast(channel, data)
 
-  runUploadOnlyJob(jobId, body, abortController.signal, sendEvent, db).catch(err => {
+  runUploadOnlyJob(jobId, body, abortController.signal, sendEvent).catch(err => {
     sendEvent('job:error', { jobId, error: (err as Error).message, phase: 'uploading' })
   }).finally(() => {
     activeJobs.delete(jobId)
@@ -1075,15 +1068,13 @@ router.post('/api/ai/upload-only', requireAuth as import('express').RequestHandl
 
 // GET /api/ai/recommendations
 router.get('/api/ai/recommendations', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const db = req.app.locals.db as Database
-
   let clientBundle: ClientBundle
-  try { clientBundle = assertClientConfigured(db) } catch (err) {
+  try { clientBundle = await assertClientConfigured() } catch (err) {
     res.json({ success: false, error: (err as Error).message, recommendations: [], fromCache: false }); return
   }
   const { client, model } = clientBundle
 
-  const cacheRow = db.prepare("SELECT value FROM app_settings WHERE key = 'recommendations_cache'").get() as { value: string } | undefined
+  const cacheRow = await prisma.appSetting.findUnique({ where: { key: 'recommendations_cache' } })
   let cachedRecommendations: unknown[] | null = null
   if (cacheRow?.value) {
     try { cachedRecommendations = JSON.parse(cacheRow.value) } catch { /* ignore corrupt cache */ }
@@ -1103,7 +1094,7 @@ Respond ONLY with a JSON array. No markdown, no explanation.`,
       const jsonMatch = text.match(/\[[\s\S]*\]/)
       const fresh = jsonMatch ? JSON.parse(jsonMatch[0]) : []
       if (Array.isArray(fresh) && fresh.length > 0) {
-        db.prepare("INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('recommendations_cache', ?, datetime('now'))").run(JSON.stringify(fresh))
+        await prisma.appSetting.upsert({ where: { key: 'recommendations_cache' }, update: { value: JSON.stringify(fresh) }, create: { key: 'recommendations_cache', value: JSON.stringify(fresh) } })
         sseManager.broadcast('recommendations-updated', { recommendations: fresh })
       }
     } catch (refreshErr) {
@@ -1130,7 +1121,7 @@ Respond ONLY with a JSON array. No markdown, no explanation.`,
     const jsonMatch = text.match(/\[[\s\S]*\]/)
     const recommendations = jsonMatch ? JSON.parse(jsonMatch[0]) : []
     if (Array.isArray(recommendations) && recommendations.length > 0) {
-      db.prepare("INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('recommendations_cache', ?, datetime('now'))").run(JSON.stringify(recommendations))
+      await prisma.appSetting.upsert({ where: { key: 'recommendations_cache' }, update: { value: JSON.stringify(recommendations) }, create: { key: 'recommendations_cache', value: JSON.stringify(recommendations) } })
     }
     res.json({ success: true, recommendations, fromCache: false })
   } catch (err) {
