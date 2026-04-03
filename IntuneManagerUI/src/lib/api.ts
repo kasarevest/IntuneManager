@@ -47,7 +47,7 @@ export interface SettingsGetRes {
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 function getAuthHeader(): Record<string, string> {
-  const token = sessionStorage.getItem('sessionToken')
+  const token = sessionStorage.getItem('intunemanager_session')
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 

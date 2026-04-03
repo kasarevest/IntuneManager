@@ -75,7 +75,7 @@ router.post('/api/auth/login', (req, res) => {
 
     res.json({
       success: true,
-      token,
+      sessionToken: token,
       user: {
         id: user.id,
         username: user.username,
