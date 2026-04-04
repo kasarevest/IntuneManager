@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import type { TenantInfo } from '../types/app'
-import { ipcPsGetTenantConfig, ipcPsConnectTenant, ipcPsDisconnectTenant } from '../lib/ipc'
+import { ipcPsGetTenantConfig, ipcPsConnectTenant, ipcPsDisconnectTenant } from '../lib/api'
 
 interface TenantContextValue {
   tenant: TenantInfo

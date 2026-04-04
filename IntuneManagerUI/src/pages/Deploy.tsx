@@ -5,17 +5,8 @@ import LogPanel from '../components/LogPanel'
 import ProgressStepper from '../components/ProgressStepper'
 import type { LogEntry, DeployJob } from '../types/app'
 import type { IntunewinPackage } from '../types/ipc'
-import {
-  ipcAiPackageOnly,
-  ipcAiUploadOnly,
-  ipcAiCancel,
-  ipcPsListIntunewinPackages,
-  onJobLog,
-  onJobPhaseChange,
-  onJobComplete,
-  onJobError,
-  onJobPackageComplete
-} from '../lib/ipc'
+import { ipcAiPackageOnly, ipcAiUploadOnly, ipcAiCancel, ipcPsListIntunewinPackages } from '../lib/api'
+import { onJobLog, onJobPhaseChange, onJobComplete, onJobError, onJobPackageComplete } from '../lib/sse'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

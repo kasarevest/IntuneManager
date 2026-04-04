@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import type { AppRow } from '../types/app'
-import { ipcPsGetIntuneApps, ipcPsGetPackageSettings, ipcPsGetLatestVersion } from '../lib/ipc'
+import { ipcPsGetIntuneApps, ipcPsGetPackageSettings, ipcPsGetLatestVersion } from '../lib/api'
 
 function compareVersions(latest: string, intune: string): 'current' | 'update-available' | 'unknown' {
   try {

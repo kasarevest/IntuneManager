@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   Int       @id @default(autoincrement())
+  username             String    @unique
+  password_hash        String
+  role                 String
+  created_at           DateTime  @default(now())
+  last_login           DateTime?
+  must_change_password Int       @default(0)
+  sessions             Session[]
+
+  @@map("users")
+}
+
+model Session {
+  token      String   @id
+  user_id    Int
+  created_at DateTime @default(now())
+  expires_at DateTime
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model TenantConfig {
+  id                  Int      @id
+  tenant_id           String?
+  tenant_display_name String?
+  username            String?
+  token_expiry        String?
+  connected_at        String?
+  updated_at          DateTime @default(now())
+
+  @@map("tenant_config")
+}
+
+model AppSetting {
+  key        String   @id
+  value      String   @db.NVarChar(Max)
+  updated_at DateTime @default(now())
+
+  @@map("app_settings")
+}
+
+model AppDeployment {
+  id               Int       @id @default(autoincrement())
+  job_id           String    @unique
+  app_name         String
+  winget_id        String?
+  intune_app_id    String?
+  deployed_version String?
+  operation        String
+  status           String    @default("pending")
+  error_message    String?
+  intunewin_path   String?
+  performed_by     Int?
+  started_at       DateTime  @default(now())
+  completed_at     DateTime?
+  log_snapshot     String?   @db.NVarChar(Max)
+
+  @@map("app_deployments")
+}

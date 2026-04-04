@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useTenant } from '../contexts/TenantContext'
-import { ipcAuthChangePassword } from '../lib/ipc'
+import { ipcAuthChangePassword } from '../lib/api'
 
 export default function NewUserSetup() {
   const { user, sessionToken, refreshSession } = useAuth()

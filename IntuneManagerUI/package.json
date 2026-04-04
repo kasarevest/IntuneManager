@@ -5,7 +5,9 @@
   "main": "builds/dist-electron/main.js",
   "scripts": {
     "dev": "vite",
+    "dev:web": "concurrently \"cd server && node -r ts-node/register index.ts\" \"vite --config vite.web.config.ts\"",
     "build": "tsc -p tsconfig.node.json && tsc --noEmit && vite build",
+    "build:web": "vite build --config vite.web.config.ts",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "electron:build": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "typecheck": "tsc --noEmit",

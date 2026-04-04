@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { LogEntry, DeployJob } from '../types/app'
-import { ipcAiDeployApp, ipcAiCancel, onJobLog, onJobPhaseChange, onJobComplete, onJobError } from '../lib/ipc'
+import { ipcAiDeployApp, ipcAiCancel } from '../lib/api'
+import { onJobLog, onJobPhaseChange, onJobComplete, onJobError } from '../lib/sse'
 
 export function useDeployJob() {
   const [job, setJob] = useState<DeployJob | null>(null)

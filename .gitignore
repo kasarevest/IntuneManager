@@ -1,5 +1,6 @@
 # Node / Electron build artifacts
 IntuneManagerUI/node_modules/
+IntuneManagerUI/server/node_modules/
 IntuneManagerUI/builds/
 IntuneManagerUI/release/
 IntuneManagerUI/*.tsbuildinfo
@@ -14,6 +15,7 @@ IntuneManagerUI/src/**/*.js.map
 # Local dev environment
 IntuneManagerUI/.env
 IntuneManagerUI/.env.local
+IntuneManagerUI/server/.env
 
 # Downloaded installers and generated packages
 Source/*/
