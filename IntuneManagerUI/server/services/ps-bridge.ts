@@ -1,6 +1,5 @@
 import { spawn, ChildProcess } from 'child_process'
 import path from 'path'
-import type { Database } from 'better-sqlite3'
 
 // server/ is a sibling to electron/ inside IntuneManagerUI/
 const PS_SCRIPTS_DIR = path.join(__dirname, '..', 'electron', 'ps-scripts')
@@ -29,7 +28,10 @@ export function runPsScript(
       ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
       : ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
 
-    const proc: ChildProcess = spawn('powershell.exe', psArgs, {
+    // Use 'pwsh' (PowerShell 7, cross-platform) in production Linux containers;
+    // fall back to 'powershell.exe' on Windows (local dev / Electron).
+    const psBin = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
+    const proc: ChildProcess = spawn(psBin, psArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
@@ -81,24 +83,13 @@ export function runPsScript(
     signal?.addEventListener('abort', () => {
       try {
         proc.kill()
-        spawn('taskkill', ['/pid', String(proc.pid), '/f', '/t'], { windowsHide: true })
+        if (process.platform === 'win32') {
+          spawn('taskkill', ['/pid', String(proc.pid), '/f', '/t'], { windowsHide: true })
+        } else {
+          spawn('kill', ['-9', String(proc.pid)])
+        }
       } catch { /* ignore */ }
     })
   })
 }
 
-// ─── DB cache helpers ─────────────────────────────────────────────────────────
-
-export function getCached(db: Database, key: string): Record<string, unknown> | null {
-  try {
-    const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | undefined
-    if (!row?.value) return null
-    return JSON.parse(row.value) as Record<string, unknown>
-  } catch { return null }
-}
-
-export function saveCache(db: Database, key: string, data: Record<string, unknown>): void {
-  try {
-    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(data))
-  } catch { /* non-fatal */ }
-}

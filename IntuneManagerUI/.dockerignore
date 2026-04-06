@@ -1,0 +1,10 @@
+node_modules
+builds/
+electron/
+.vite/
+dist/
+*.log
+.env
+.env.*
+!.env.example
+electron-builder.yml

@@ -641,6 +641,47 @@ Multiple sessions of TypeScript changes (Dashboard v2, caching, new user setup) 
 
 ---
 
+## Lesson 004 — Azure Provisioning & Serverless Architecture (2026-04-06)
+
+### Keywords
+`azure`, `app-service`, `container-apps`, `quota`, `serverless`, `docker`, `prisma`, `provisioning`, `pivot-rule`
+
+### What Happened
+Attempted to provision Azure App Service Plan across 4 iterations before abandoning in favour of a fully serverless architecture. Failures in order:
+1. `--is-windows` flag not recognised by installed Azure CLI version
+2. `--os-type Windows` also not recognised
+3. P2v3 quota = 0 in UK South
+4. S2 Standard quota = 0 in UK South and East US
+5. B1 Basic quota = 0 everywhere
+
+Separately, provisioning started in UK South when the target region should have been East US from the start.
+
+The Pivot Rule was triggered after adjustment #2 but not acted on until adjustment #4 — two pivots too late.
+
+### Anti-Pattern (Why It Happened)
+**Tactical fixes without strategic re-evaluation.** Each failure prompted a narrow fix (change the flag, change the SKU, change the region) rather than stepping back to ask: "Is App Service the right service at all?" The quota failures were signals that the subscription was a free/trial account with heavy restrictions — the correct response was to redesign around serverless from the first quota error, not to keep trying different tiers.
+
+**Region drift:** The first provisioning command did not specify a region requirement. Region should be a pre-flight decision, not an afterthought.
+
+### Heuristic (Prevention)
+1. **Region is a pre-flight decision.** Lock the target region before writing the first provisioning command. Include it in the risk assessment.
+2. **Quota = 0 on first attempt → stop and re-evaluate the service.** Do not retry the same service class with a different tier/region. A quota of 0 across all tiers signals a wrong service choice or subscription type.
+3. **The Pivot Rule applies to provisioning scripts too.** If a provisioning script requires more than 2 corrections, rewrite the script from scratch rather than patching it.
+4. **Validate Azure CLI flags against the installed version before scripting.** Run `az appservice plan create --help` to check available flags before hardcoding them.
+
+### Technical Patterns Established
+
+| Pattern | Rule |
+|---|---|
+| Azure CLI flag validation | Run `az <command> --help` before using any non-standard flag in a script |
+| Serverless-first for new subscriptions | Free/trial Azure subscriptions have near-zero compute quotas. Default to Container Apps (Consumption) + SQL Serverless for all new deployments |
+| Dockerfile path resolution | When Express serves a static SPA, replicate the dev directory structure in Docker (`server/dist/` at a sub-path, not WORKDIR root) so `__dirname`-relative paths resolve identically in dev and production |
+| Prisma in Docker | `binaryTargets = ["native", "debian-openssl-3.0.x"]` for `node:20-slim` base images. Run `npx prisma generate` in the builder stage, not the runtime stage |
+| Prisma on fresh database | No `prisma/migrations/` = use `prisma db push`. Generate migrations locally once the schema stabilises, then switch to `prisma migrate deploy` |
+| PS bridge cross-platform | `process.platform === 'win32' ? 'powershell.exe' : 'pwsh'` — never hardcode `powershell.exe` in server code that runs on Linux |
+
+---
+
 ## Lesson Template (copy for new entries)
 
 ```
