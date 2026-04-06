@@ -12,9 +12,9 @@
 FROM node:20-slim AS spa-builder
 WORKDIR /build
 
-COPY package.json package-lock.json ./
+COPY package.json ./
 # --ignore-scripts skips the postinstall electron-rebuild (not needed for web)
-RUN npm ci --ignore-scripts
+RUN npm install --ignore-scripts
 
 COPY src/ ./src/
 COPY vite.web.config.ts tsconfig.json tsconfig.node.json index.html ./
@@ -26,8 +26,8 @@ RUN npm run build:web
 FROM node:20-slim AS server-builder
 WORKDIR /build/server
 
-COPY server/package.json server/package-lock.json ./
-RUN npm ci
+COPY server/package.json ./
+RUN npm install
 
 COPY server/ ./
 

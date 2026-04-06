@@ -1,6 +1,7 @@
 node_modules
 builds/
 electron/
+!electron/ps-scripts/
 .vite/
 dist/
 *.log
