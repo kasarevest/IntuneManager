@@ -1,12 +1,13 @@
 # IntuneManager — User Manual
 
-**Version:** 1.3 | **Audience:** IT Administrators | **Last Updated:** 2026-04-02
+**Version:** 1.4 | **Audience:** IT Administrators | **Last Updated:** 2026-04-06
 
 ---
 
 ## Table of Contents
 
 1. [Overview](#1-overview)
+1a. [Deployment Modes](#1a-deployment-modes)
 2. [Prerequisites](#2-prerequisites)
 3. [First-Time Setup](#3-first-time-setup)
 4. [Connecting to Your Microsoft Tenant](#4-connecting-to-your-microsoft-tenant)
@@ -64,6 +65,24 @@ IntuneManager has five main pages accessible from the top navigation bar:
 | **Devices** | `/devices` | Device compliance, Windows Update status, driver updates, diagnostics |
 
 Navigation is standardized across all pages: **Dashboard → Installed Apps → App Catalog → Deploy → Devices**
+
+---
+
+## 1a. Deployment Modes
+
+IntuneManager runs in two modes:
+
+| Mode | How to access | Notes |
+|------|--------------|-------|
+| **Desktop (Electron)** | Double-click `IntuneManager.exe` | Windows only. Full functionality including tenant connect, packaging, and app deployment. |
+| **Web (Hosted)** | Open the Container App URL in a browser | Runs on Azure Container Apps (Linux). Tenant authentication and app packaging (requires IntuneWinAppUtil.exe) are not available in Phase 2 — these are replaced by the Graph SDK in Phase 3. Useful for monitoring dashboards, installed apps view, and device health remotely. |
+
+The hosted web URL is:
+```
+https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io
+```
+
+The Desktop mode instructions below apply to both modes except where noted.
 
 ---
 

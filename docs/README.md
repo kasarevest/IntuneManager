@@ -8,9 +8,24 @@ All project documentation lives in this `docs/` folder.
 
 | File | Audience | Description |
 |------|----------|-------------|
-| [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) | Developers / Contributors | Architecture, design decisions, data model, pipeline details, file structure, dependencies, known limitations, resolved issues |
+| [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) | Developers / Contributors | Architecture, design decisions, data model, pipeline details, file structure, dependencies, web deployment (Azure Container Apps), known limitations, resolved issues |
 | [USER_MANUAL.md](USER_MANUAL.md) | IT Administrators | Step-by-step guide: setup, connecting tenant, Dashboard, Installed Apps, App Catalog, Deploy page, Devices page, update workflows, settings, troubleshooting |
 | [WORKFLOW.md](WORKFLOW.md) | All contributors | Enhanced Workflow Orchestration rules: planning triggers, peer review pattern, self-improvement loop, flight checklist, core principles |
+
+---
+
+## Deployment
+
+The application runs as an **Electron desktop app** (Windows) or a **containerised web app** (Azure Container Apps, Linux).
+
+| Mode | Entry point | Registry | Hosting |
+|------|-------------|----------|---------|
+| Desktop | `npm run build` → `IntuneManager.exe` | N/A | Local |
+| Web | `.github/workflows/deploy-container-app.yml` → `ghcr.io/<owner>/intunemanager:latest` | GHCR | Azure Container Apps (East US) |
+
+Container App URL: `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io`
+
+CI/CD pushes to `master` branch trigger an automatic build and deploy.
 
 ---
 
@@ -41,7 +56,7 @@ These files live in `tasks/` (not `docs/`) because they are working documents up
 | File | Description |
 |------|-------------|
 | `tasks/todo.md` | Pre-flight / post-flight records for every task. Full audit trail of what was planned, implemented, and verified. |
-| `tasks/lessons.md` | 8 accumulated lessons with anti-patterns, heuristics, and reusable technical patterns. Query by keyword at session start. |
+| `tasks/lessons.md` | Accumulated lessons with anti-patterns, heuristics, and reusable technical patterns. Query by keyword at session start. |
 
 ---
 

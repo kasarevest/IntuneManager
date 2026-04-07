@@ -106,7 +106,7 @@ Step 1 — Cleanup (delete uksouth resources)
 #### Phase 4 — CI/CD Pipeline
 - [x] **`.github/workflows/deploy-container-app.yml`** — ubuntu-latest; GHCR push; prisma db push; Container Apps deploy
 - [x] Removed old `deploy-azure.yml` (App Service)
-- [ ] Add GitHub secrets: `AZURE_CREDENTIALS` (SP JSON from script output), `DATABASE_URL`
+- [x] Add GitHub secrets: `AZURE_CREDENTIALS` (SP JSON from script output), `DATABASE_URL`
 
 #### Phase 5 — Peer Review (COMPLETE)
 - [x] Peer-review subagent run — 4 BLOCKING, 1 MAJOR, 2 MINOR found
@@ -117,10 +117,17 @@ Step 1 — Cleanup (delete uksouth resources)
 - [x] MAJOR: PowerShell IS required (ps-bridge uses pwsh) — accepted, not a bug
 - [x] MINOR: kept `"native"` in binaryTargets (needed for local dev)
 
-#### Phase 6 — Post-Flight
-- [ ] Add post-flight review once provisioning + CI/CD run succeeds
-- [ ] Update `tasks/lessons.md`
-- [ ] Record evidence of correctness (GitHub Actions green, app URL live)
+#### Phase 6 — Post-Flight (IN PROGRESS)
+- [x] Docker image builds successfully and pushes to GHCR on every push to `master`
+- [x] Azure Container App `ca-intunemanager-prod` deployed at `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io`
+- [x] `tasks/lessons.md` updated with Lesson 008 (Azure Container Apps deployment patterns)
+- [x] All documentation updated (PROJECT_OVERVIEW.md, README.md, USER_MANUAL.md, todo.md)
+- [ ] **CURRENT BLOCKER** — `prisma db push` fails with `P1000: Authentication failed`
+  - Root cause: `DATABASE_URL` GitHub secret has wrong password for `intuneadmin` on `sql-intunemanager-prod` (westus2)
+  - Fix: `az sql server update --name sql-intunemanager-prod --resource-group rg-intunemanager-prod --admin-password <NEW>` then update GitHub secret `DATABASE_URL` and re-run workflow
+- [ ] Verification: GitHub Actions workflow fully green (all steps including prisma db push)
+- [ ] Verification: Container App URL loads React SPA login screen
+- [ ] Verification: `POST /api/auth/login` returns 200 with JWT
 
 ---
 

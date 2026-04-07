@@ -1,6 +1,6 @@
 # IntuneManager — Project Overview
 
-**Last Updated:** 2026-04-02
+**Last Updated:** 2026-04-06
 
 ## What is IntuneManager?
 
@@ -18,10 +18,17 @@ The project consists of two components:
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| `IntuneManagerUI\` | Electron + React desktop app | Primary user interface |
+| `IntuneManagerUI\` | Electron + React desktop app (primary) / Express + React web app (containerised) | Primary user interface |
 | `IntuneManager\` | PowerShell module library | PS execution layer (reused by UI via ps-bridge) |
 
 The UI is the active component. The original PowerShell + WPF application was superseded by the Electron rebuild.
+
+The application supports two deployment modes:
+
+| Mode | Build command | Runtime | Hosting |
+|------|--------------|---------|---------|
+| **Desktop (Electron)** | `npm run build` | Electron, Windows only | Local install |
+| **Web (Container)** | `npm run build:web` | Node.js + Express, Linux | Azure Container Apps |
 
 ---
 
@@ -139,6 +146,113 @@ This bypasses two PS 5.1 serialization bugs: (1) CLI argument mangling of `{ } :
 
 **`UploadManager.psm1` — SAS URI polling + inner blob streaming**
 The `.intunewin` outer file is a ZIP. The actual content to upload is the inner `IntunePackage.intunewin` entry — not the outer ZIP. After `POST .../contentVersions/{id}/files`, Graph API provisions `azureStorageUri` asynchronously. The upload manager polls `GET .../files/{fileId}` at 5-second intervals (up to 60 seconds) until `azureStorageUri` is populated, then streams the inner encrypted blob in 5 MB chunks directly from the ZIP entry.
+
+---
+
+## Web Deployment Architecture
+
+The application is deployable as a containerised web app via a multi-stage Docker build and GitHub Actions CI/CD pipeline.
+
+### Azure Resources
+
+| Resource | Name | Region | Purpose |
+|----------|------|--------|---------|
+| Container Apps Environment | `cae-intunemanager-prod` | East US | Hosts the container |
+| Container App | `ca-intunemanager-prod` | East US | Express + React SPA, scale-to-zero |
+| Azure SQL Serverless | `sql-intunemanager-prod` | West US 2 | Prisma ORM, auto-pauses after 60 min idle |
+| Azure Blob Storage | `stintunemgrprod` | East US | Source/output file storage |
+| Azure Key Vault | `kv-intunemgr-prod` | East US | Runtime secrets |
+| GitHub Container Registry | `ghcr.io/<owner>/intunemanager` | — | Container image registry (free) |
+
+> SQL Server is in West US 2 because East US and East US 2 had no serverless SQL quota available on the subscription at provisioning time.
+
+### Container App URL
+
+```
+https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io
+```
+
+### Docker Build (Multi-Stage)
+
+```
+IntuneManagerUI/Dockerfile
+  Stage 1 — spa-builder (node:20-slim)
+    npm install --ignore-scripts (skips electron-rebuild)
+    npm run build:web
+    Output: /build/builds/dist-web/
+
+  Stage 2 — server-builder (node:20-slim)
+    npm install
+    npx prisma generate  (generates Linux binary: debian-openssl-3.0.x)
+    npm run build        (TypeScript → dist/)
+    Output: /build/server/dist/, /build/server/node_modules/
+
+  Stage 3 — runtime (node:20-slim)
+    apt-get install powershell  (pwsh 7 — required for ps-bridge.ts)
+    COPY server/dist/, server/node_modules/, server/prisma/
+    COPY electron/ps-scripts/   (PowerShell bridge scripts)
+    COPY builds/dist-web/       (React SPA static files)
+    CMD node server/dist/index.js
+    EXPOSE 8080
+```
+
+**Key `.dockerignore` rule:** `electron/` is excluded except for `!electron/ps-scripts/` — ps-scripts must be included for the PowerShell bridge.
+
+### CI/CD Pipeline
+
+`.github/workflows/deploy-container-app.yml` runs on every push to `master`:
+
+```
+1. Log in to GHCR
+2. docker/setup-buildx-action (required for GHA cache backend)
+3. docker build --push → ghcr.io/<owner>/intunemanager:latest + sha-<sha>
+4. actions/setup-node + npm install (server deps)
+5. npx prisma db push --skip-generate --accept-data-loss
+6. azure/login (AZURE_CREDENTIALS secret)
+7. azure/container-apps-deploy-action → ca-intunemanager-prod
+```
+
+**Required GitHub Secrets:**
+- `AZURE_CREDENTIALS` — Service principal JSON (`az ad sp create-for-rbac --json-auth`)
+- `DATABASE_URL` — Full SQL Server connection string:
+  `sqlserver://sql-intunemanager-prod.database.windows.net:1433;database=intunemanager;user=intuneadmin;password=<PWD>;encrypt=true;trustServerCertificate=false;connectionTimeout=60;loginTimeout=60`
+
+### Database (Web Mode)
+
+In web mode the application uses **Azure SQL Server** via Prisma ORM instead of SQLite.
+
+The Prisma schema (`server/prisma/schema.prisma`) uses `provider = "sqlserver"` with:
+```prisma
+binaryTargets = ["native", "debian-openssl-3.0.x"]
+```
+- `native` — used for local development (any OS)
+- `debian-openssl-3.0.x` — used inside the Docker container (node:20-slim / Debian 12)
+
+Schema is applied using `prisma db push` (not `migrate deploy`) because no `prisma/migrations/` folder exists yet. Migration to `prisma migrate deploy` is Phase 3 technical debt.
+
+### PowerShell Bridge in Web Mode
+
+`server/services/ps-bridge.ts` selects the PowerShell binary at runtime:
+
+```typescript
+const psBin = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
+```
+
+On Linux (Container Apps) it spawns `pwsh` (PowerShell 7, installed in the Docker runtime stage). On Windows (desktop Electron) it spawns `powershell.exe` (5.1). Kill also uses platform-appropriate commands (`kill -9` vs `taskkill /f /t`).
+
+**Known limitation:** PS scripts that load `Microsoft.Identity.Client.dll` (MSAL.NET, .NET Framework) will fail on Linux `pwsh`. This affects tenant authentication (Connect-Tenant.ps1). This is accepted technical debt for Phase 2 — the Graph SDK will replace MSAL-based scripts in Phase 3.
+
+### Server-Side Caching (Web Mode)
+
+In web mode the server uses `server/services/cache.ts` (Prisma-backed) instead of SQLite:
+
+```typescript
+// Reads/writes AppSetting table rows (key-value store)
+getCached(key: string): Promise<Record<string, unknown> | null>
+saveCache(key: string, data: Record<string, unknown>): Promise<void>
+```
+
+This replaces the `better-sqlite3` cache that was used in the Electron version.
 
 ---
 
@@ -327,15 +441,18 @@ RESULT:{"success":true,"appId":"..."}     -> terminal return value (JSON)
 ## File Structure
 
 ```
-Intune MSI Prep\
-├── IntuneManagerUI\           <- Electron + React application
+IntuneManager\
+├── IntuneManagerUI\           <- Electron + React application (desktop) / Express + React web app (container)
+│   ├── Dockerfile             <- Multi-stage Docker build (spa-builder → server-builder → runtime with pwsh)
+│   ├── .dockerignore          <- Excludes node_modules, builds/, electron/ (except ps-scripts/)
+│   ├── vite.web.config.ts     <- Vite config for web-only build (no Electron plugins)
 │   ├── electron\
 │   │   ├── main.ts            <- Window creation, DB init, migrations, IPC registration
 │   │   ├── preload.ts         <- contextBridge (invoke, on, once, off)
 │   │   └── ipc\
 │   │       ├── ai-agent.ts    <- Claude tool-use loop + 3 job runners + recommendations cache
 │   │       ├── auth.ts        <- Local auth (bcrypt, sessions)
-│   │       ├── ps-bridge.ts   <- PowerShell spawn + LOG/RESULT protocol + device IPC + ipc:aws:sso-login
+│   │       ├── ps-bridge.ts   <- PowerShell spawn (platform-aware: pwsh/powershell.exe) + LOG/RESULT protocol
 │   │       └── settings.ts    <- App settings + dialog handlers + aws_region/aws_bedrock_model_id
 │   ├── electron\ps-scripts\   <- 18 PS bridge scripts
 │   │   ├── Connect-Tenant.ps1          <- MSAL silent + interactive login
@@ -384,6 +501,14 @@ Intune MSI Prep\
 │   │   │   └── ipc.ts                  <- All IPC request/response types
 │   │   └── lib\ipc.ts                  <- Typed IPC wrappers (all channels)
 │   ├── db\schema.sql          <- SQLite schema (incl. token_expiry in tenant_config)
+│   ├── server\                <- Express.js API server (web deployment)
+│   │   ├── index.ts           <- Express app, CORS, static SPA serving in production
+│   │   ├── prisma\
+│   │   │   └── schema.prisma  <- Prisma schema (sqlserver provider, debian-openssl-3.0.x binary)
+│   │   ├── services\
+│   │   │   ├── ps-bridge.ts   <- Server-side PowerShell spawn (platform-aware)
+│   │   │   └── cache.ts       <- Prisma-backed key-value cache (replaces better-sqlite3 in web mode)
+│   │   └── package.json
 │   └── package.json
 │
 ├── IntuneManager\             <- PS module library (used by UI via ps-bridge)
@@ -401,6 +526,11 @@ Intune MSI Prep\
 ├── Output\                    <- Generated .intunewin packages
 ├── IntuneWinAppUtil.exe        <- Microsoft packaging tool
 │
+├── .github\
+│   └── workflows\
+│       └── deploy-container-app.yml  <- CI/CD: build → push GHCR → prisma db push → Container Apps deploy
+├── provision-azure-v2.ps1     <- Full East US serverless provisioning script
+├── provision-azure-fixes.ps1  <- Targeted fix script (SQL westus2, KV RBAC, SP rotation)
 ├── docs\                      <- All project documentation
 │   ├── PROJECT_OVERVIEW.md    <- This file
 │   ├── USER_MANUAL.md         <- Admin user manual
@@ -422,7 +552,7 @@ Intune MSI Prep\
 
 ## Dependencies
 
-### Runtime (Electron)
+### Runtime (Electron — Desktop)
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `@anthropic-ai/sdk` | ^0.36.3 | Claude API client |
@@ -432,10 +562,21 @@ Intune MSI Prep\
 | `react-router-dom` | ^6.26.2 | Client-side routing (HashRouter) |
 | `uuid` | ^10.0.0 | Session token generation |
 
+### Runtime (Express Server — Web / Container)
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `express` | ^4 | HTTP server |
+| `@prisma/client` | ^5 | SQL Server ORM |
+| `@anthropic-ai/sdk` | ^0.36.3 | Claude API client |
+| `bcryptjs` | ^2.4.3 | Password hashing |
+| `jsonwebtoken` | ^9 | JWT session tokens |
+| `cors` | ^2 | CORS middleware |
+
 ### PowerShell
 | Library | Version | Purpose |
 |---------|---------|---------|
 | MSAL.NET | 4.43.2 net461 | Microsoft authentication (last PS 5.1 compatible version) |
+| PowerShell 7 (`pwsh`) | 7.x | Linux runtime for ps-bridge in Docker container |
 
 ### Build
 | Package | Purpose |
@@ -444,10 +585,11 @@ Intune MSI Prep\
 | `vite` ^5 | Renderer bundler |
 | `electron-builder` ^25 | NSIS installer creation |
 | `typescript` ^5.6 | Type checking |
+| `prisma` (CLI) | Schema generation + db push |
 
 ---
 
-## Known Limitations (as of 2026-03-31)
+## Known Limitations (as of 2026-04-06)
 
 1. **No group assignment** — Apps deployed to Intune are not assigned to any AAD group. Manual assignment in Intune portal required after each deployment.
 
@@ -468,6 +610,14 @@ Intune MSI Prep\
 9. **Driver update status always 'unknown'** — Graph API `managedDevices` does not expose a dedicated driver update status field. The Devices page shows 'Unknown' for all devices.
 
 10. **Device diagnostics shows 'Request Logs' regardless of prior requests** — No polling of existing log collection request status; the button always triggers a new request.
+
+11. **Web mode: tenant authentication broken** — `Connect-Tenant.ps1` uses MSAL.NET (`.NET Framework`). On Linux `pwsh`, `Add-Type` for `.dll` files targeting `.NET Framework` fails. Tenant connect is non-functional in the web container. Workaround: pre-populate `tenant_config` row directly in the database. Resolution: Phase 3 will replace MSAL.NET scripts with `@azure/identity` + `@microsoft/microsoft-graph-client`.
+
+12. **Web mode: `IntuneWinAppUtil.exe` unavailable** — The packaging binary is Windows-only and is not included in the Docker image. The `build_package` AI agent tool will fail in the web container. Resolution: Phase 3 will spawn an Azure Container Instance (Windows, pay-per-second) on demand for packaging jobs.
+
+13. **Web mode: in-memory SSEManager** — `SSEManager` holds active SSE connections in process memory. If Container Apps scales to more than one replica, SSE events will only reach clients connected to the same replica. Resolution: Phase 4 will use Azure Service Bus for fan-out.
+
+14. **SQL Server in West US 2, everything else in East US** — Introduced cross-region latency (~30 ms). Azure SQL Serverless had no quota in East US or East US 2 on this subscription at provisioning time.
 
 ---
 
@@ -498,3 +648,29 @@ Intune MSI Prep\
 - **App Catalog recommendations slow to load** — Fixed: recommendations are now persisted to `app_settings` (`recommendations_cache`) after each Claude call. Subsequent loads return the cache immediately; Claude refresh runs in the background and pushes updated results via `ipc:ai:recommendations-updated`. *(2026-03-31)*
 
 - **Settings only supported a single Claude API key** — Fixed: Settings → General now supports two connection methods — Direct Anthropic API key or AWS Bedrock (SSO). Save is blocked with a clear error if neither method is configured. `aws_region` and `aws_bedrock_model_id` added to `app_settings`. `ipc:aws:sso-login` handler added to `ps-bridge.ts` to run `aws sso login`. *(2026-04-01)*
+
+---
+
+### Web Deployment Resolved Issues *(2026-04-06)*
+
+- **`powershell.exe` hardcoded in ps-bridge.ts** — Fixed: `const psBin = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'`. Kill signal also platform-aware (`kill -9` on Linux vs `taskkill /f /t` on Windows). Both `electron/ipc/ps-bridge.ts` and `server/services/ps-bridge.ts` updated.
+
+- **Prisma binary not found in Linux container** — Fixed: added `binaryTargets = ["native", "debian-openssl-3.0.x"]` to `server/prisma/schema.prisma`. `native` covers local dev; `debian-openssl-3.0.x` covers `node:20-slim` (Debian 12) in Docker.
+
+- **`better-sqlite3` cache in server code** — Fixed: `server/services/cache.ts` created using Prisma `AppSetting` table as a key-value store. Import in `server/routes/ps.ts` updated.
+
+- **GHA Docker cache export fails (no Buildx driver)** — Fixed: added `docker/setup-buildx-action@v3` step before `docker/build-push-action@v5` in the workflow. Required for the GHA cache backend.
+
+- **`npm ci` fails — no package-lock.json** — Fixed: changed all `npm ci` to `npm install` in the Dockerfile and workflow. Project has no lock files.
+
+- **`electron/ps-scripts/` excluded by `.dockerignore`** — Fixed: `.dockerignore` includes `electron/` (to exclude Electron binaries/config) but adds `!electron/ps-scripts/` exception so PowerShell bridge scripts are available in the container.
+
+- **`prisma migrate deploy` fails — no migrations folder** — Fixed: changed to `prisma db push --skip-generate --accept-data-loss` in the CI/CD workflow. No `prisma/migrations/` folder exists yet.
+
+- **`COPY public/ ./public/` in Dockerfile — directory doesn't exist** — Fixed: removed that line. The public folder is not used; React SPA is at `builds/dist-web/`.
+
+- **App Service Plan quota = 0 across all tiers** — Pivoted to Azure Container Apps (Consumption). Container Apps uses no VM quota — scale-to-zero, pay per request.
+
+- **Key Vault RBAC mode — `az keyvault set-policy` rejected** — Fixed: new Azure Key Vaults default to RBAC authorization. Used `az role assignment create --role "Key Vault Secrets Officer"` for the admin account and `"Key Vault Secrets User"` for the Container App Managed Identity instead.
+
+- **Azure SQL blocked in East US / East US 2** — Provisioned in West US 2 (`westus2`) where quota was available.

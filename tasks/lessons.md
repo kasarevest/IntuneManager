@@ -641,33 +641,60 @@ Multiple sessions of TypeScript changes (Dashboard v2, caching, new user setup) 
 
 ---
 
-## Lesson 004 — Azure Provisioning & Serverless Architecture (2026-04-06)
+## Lesson 011 — Azure Container Apps Deployment: Provisioning & CI/CD Anti-Patterns (2026-04-06)
 
 ### Keywords
-`azure`, `app-service`, `container-apps`, `quota`, `serverless`, `docker`, `prisma`, `provisioning`, `pivot-rule`
+`azure`, `app-service`, `container-apps`, `quota`, `serverless`, `docker`, `prisma`, `provisioning`, `pivot-rule`, `github-actions`, `ghcr`, `buildx`, `npm-ci`, `dockerignore`, `key-vault`, `rbac`, `sql-server`, `database-url`, `p1000`, `pwsh`
 
 ### What Happened
-Attempted to provision Azure App Service Plan across 4 iterations before abandoning in favour of a fully serverless architecture. Failures in order:
-1. `--is-windows` flag not recognised by installed Azure CLI version
-2. `--os-type Windows` also not recognised
-3. P2v3 quota = 0 in UK South
-4. S2 Standard quota = 0 in UK South and East US
-5. B1 Basic quota = 0 everywhere
 
-Separately, provisioning started in UK South when the target region should have been East US from the start.
+Deployed IntuneManager as a containerised web application on Azure Container Apps. The path from plan to running container involved 12+ corrective adjustments across Azure provisioning, Dockerfile authoring, and GitHub Actions pipeline configuration.
+
+**Provisioning failures (5 iterations before architecture pivot):**
+1. `--is-windows` flag: not recognised by installed Azure CLI version
+2. `--os-type Windows`: also not recognised
+3. P2v3 App Service quota = 0 (UK South)
+4. S2 Standard quota = 0 (UK South + East US)
+5. B1 Basic quota = 0 everywhere → Pivot to Azure Container Apps (Consumption)
+
+**Provisioning failures (post-pivot):**
+6. Key Vault `MissingSubscriptionRegistration` — provider not registered
+7. Key Vault `az keyvault set-policy` rejected — RBAC mode; must use `az role assignment create`
+8. Key Vault `ForbiddenByRbac` seeding secrets — role not propagated yet; must wait ~30 seconds
+9. Azure SQL blocked in East US + East US 2 — moved to West US 2
+
+**Dockerfile / GitHub Actions failures:**
+10. GHA Docker cache backend fails without Buildx (`docker/setup-buildx-action@v3` missing)
+11. `npm ci` fails — project has no `package-lock.json`; must use `npm install`
+12. `electron/ps-scripts/` excluded by `.dockerignore` `electron/` rule — needs `!electron/ps-scripts/` exception
+13. `DATABASE_URL` empty string in GitHub Actions — secret not yet added
+14. `P1000: Authentication failed` — `DATABASE_URL` secret has wrong password for `intuneadmin`
 
 The Pivot Rule was triggered after adjustment #2 but not acted on until adjustment #4 — two pivots too late.
 
 ### Anti-Pattern (Why It Happened)
-**Tactical fixes without strategic re-evaluation.** Each failure prompted a narrow fix (change the flag, change the SKU, change the region) rather than stepping back to ask: "Is App Service the right service at all?" The quota failures were signals that the subscription was a free/trial account with heavy restrictions — the correct response was to redesign around serverless from the first quota error, not to keep trying different tiers.
 
-**Region drift:** The first provisioning command did not specify a region requirement. Region should be a pre-flight decision, not an afterthought.
+**Tactical fixes without strategic re-evaluation.** Each quota failure prompted a narrow fix (different SKU, different region) rather than stepping back to ask "Is App Service right at all?" A quota of 0 across 3 tiers and 2 regions is a signal to abandon the service class, not retry it.
+
+**Region not a pre-flight decision.** Provisioning started in UK South when East US was the requirement. The region should be locked before writing the first command.
+
+**`$ErrorActionPreference = "Stop"` treats az CLI warnings as fatal.** Azure CLI emits deprecation warnings on stderr. With Stop mode enabled, these become terminating errors in PowerShell, aborting provisioning at unrelated cleanup steps. Use `Continue` for cleanup phases.
+
+**Em dash `—` (U+2014) in PowerShell scripts without UTF-8 BOM.** PS reads files without BOM as Windows-1252 ANSI, which misinterprets multi-byte characters and breaks string parsing. Always use plain ASCII in PS scripts; if Unicode is needed, save with UTF-8 BOM.
+
+**DATABASE_URL built during provisioning prompt may not match what was actually committed.** The SQL Server and the DATABASE_URL secret were provisioned in separate steps with separate password prompts. Mismatched passwords are not caught until prisma db push runs in CI/CD.
 
 ### Heuristic (Prevention)
-1. **Region is a pre-flight decision.** Lock the target region before writing the first provisioning command. Include it in the risk assessment.
-2. **Quota = 0 on first attempt → stop and re-evaluate the service.** Do not retry the same service class with a different tier/region. A quota of 0 across all tiers signals a wrong service choice or subscription type.
-3. **The Pivot Rule applies to provisioning scripts too.** If a provisioning script requires more than 2 corrections, rewrite the script from scratch rather than patching it.
-4. **Validate Azure CLI flags against the installed version before scripting.** Run `az appservice plan create --help` to check available flags before hardcoding them.
+
+1. **Region is a pre-flight decision.** Lock the target region before writing the first provisioning command.
+2. **Quota = 0 on first attempt → stop and re-evaluate the service.** Do not retry the same service class with a different tier or region.
+3. **New Azure Key Vaults default to RBAC mode.** Never use `az keyvault set-policy` — use `az role assignment create --role "Key Vault Secrets Officer/User"` instead.
+4. **After granting RBAC roles, wait 30 seconds before using them.** Role propagation is asynchronous; immediate use returns `ForbiddenByRbac`.
+5. **Check for `package-lock.json` before using `npm ci` in Dockerfiles.** Projects without lock files must use `npm install`. `npm ci` exits 1 immediately with no lock file.
+6. **Add `docker/setup-buildx-action@v3` before `docker/build-push-action`.** The GHA cache backend (`type=gha`) requires the `docker-container` Buildx driver; the default `docker` driver doesn't support cache export.
+7. **Test `.dockerignore` exceptions with real paths.** `electron/` excludes everything including subdirs. `!electron/ps-scripts/` re-includes only that subtree. Test with `docker build --dry-run` or check layer contents.
+8. **After provisioning, verify DATABASE_URL auth independently** before adding it to GitHub Secrets. Run `sqlcmd -S <server> -U intuneadmin -P <pwd> -Q "SELECT 1"` or use Azure portal to confirm credentials work.
+9. **To recover from wrong DATABASE_URL password:** `az sql server update --name <server> --resource-group <rg> --admin-password <new>`, then update the GitHub secret and re-run the workflow.
 
 ### Technical Patterns Established
 
@@ -675,10 +702,16 @@ The Pivot Rule was triggered after adjustment #2 but not acted on until adjustme
 |---|---|
 | Azure CLI flag validation | Run `az <command> --help` before using any non-standard flag in a script |
 | Serverless-first for new subscriptions | Free/trial Azure subscriptions have near-zero compute quotas. Default to Container Apps (Consumption) + SQL Serverless for all new deployments |
-| Dockerfile path resolution | When Express serves a static SPA, replicate the dev directory structure in Docker (`server/dist/` at a sub-path, not WORKDIR root) so `__dirname`-relative paths resolve identically in dev and production |
-| Prisma in Docker | `binaryTargets = ["native", "debian-openssl-3.0.x"]` for `node:20-slim` base images. Run `npx prisma generate` in the builder stage, not the runtime stage |
-| Prisma on fresh database | No `prisma/migrations/` = use `prisma db push`. Generate migrations locally once the schema stabilises, then switch to `prisma migrate deploy` |
-| PS bridge cross-platform | `process.platform === 'win32' ? 'powershell.exe' : 'pwsh'` — never hardcode `powershell.exe` in server code that runs on Linux |
+| Key Vault access control | Use `az role assignment create` with "Key Vault Secrets Officer" (admin) and "Key Vault Secrets User" (MI). Never `az keyvault set-policy` on RBAC-enabled vaults |
+| RBAC propagation wait | `Start-Sleep -Seconds 30` after `az role assignment create` before first use of the granted permission |
+| PS `$ErrorActionPreference` | Use `Stop` for provisioning steps; use `Continue` for cleanup sections where az CLI warnings are expected |
+| Dockerfile path resolution | Replicate dev directory structure in Docker (`server/dist/` at sub-path) so `__dirname`-relative paths resolve identically in dev and container |
+| Prisma in Docker | `binaryTargets = ["native", "debian-openssl-3.0.x"]` for `node:20-slim`. Run `npx prisma generate` in the builder stage |
+| Prisma on fresh database | No `prisma/migrations/` = use `prisma db push --skip-generate --accept-data-loss`. Switch to `prisma migrate deploy` after generating migrations locally |
+| PS bridge cross-platform | `process.platform === 'win32' ? 'powershell.exe' : 'pwsh'` — never hardcode `powershell.exe` in server-side code |
+| GHA Docker cache | Always include `docker/setup-buildx-action@v3` before `docker/build-push-action@v5` |
+| npmci vs npm install | `npm ci` requires `package-lock.json` or `yarn.lock`. If the project has no lock file, use `npm install` in Dockerfiles and CI steps |
+| DATABASE_URL validation | After provisioning SQL Server, independently verify the admin credentials before storing in GitHub Secrets |
 
 ---
 
