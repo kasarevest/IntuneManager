@@ -126,9 +126,37 @@ Step 1 — Cleanup (delete uksouth resources)
 - [x] Server startup made non-blocking — `app.listen()` now called before `initializeAuth()` so health probes pass during SQL cold start
 - [x] Crash logging added — `uncaughtException` + `unhandledRejection` handlers log errors before exit
 - [x] Container App running — revision healthy, serving traffic
-- [ ] Verification: Container App URL loads React SPA login screen
-- [ ] Verification: `POST /api/auth/login` returns 200 with JWT
-- [ ] Set min-replicas back to 0 once verified (currently 1 for debugging)
+- [x] Verification: Container App URL loads React SPA login screen ✓
+- [x] Verification: First-run setup screen appears, admin account created ✓
+- [x] Verification: Login succeeds, dashboard loads ✓
+- [x] Verification: "Not connected to tenant" shown — expected (MSAL.NET broken on Linux, Phase 3 fix)
+- [x] Set min-replicas back to 0 (scale-to-zero, cost saving)
+
+---
+
+## Post-Flight Summary
+
+**Result: PASS (Phase 2 complete)**
+
+| Component | Status |
+|-----------|--------|
+| Docker image builds and pushes to GHCR | ✓ |
+| `prisma db push` applies schema to Azure SQL | ✓ |
+| `az containerapp update` deploys new image | ✓ |
+| Container App serves React SPA at public URL | ✓ |
+| Login screen and first-run setup functional | ✓ |
+| Dashboard loads (empty — no tenant connected) | ✓ Expected |
+| Tenant authentication (Connect-Tenant.ps1) | ✗ Known — Phase 3 |
+
+**Container App URL:** `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io`
+
+**Key lessons captured:** Lesson 011 in `tasks/lessons.md`
+
+**Phase 3 items (technical debt):**
+- Replace MSAL.NET PS scripts with `@azure/identity` + `@microsoft/microsoft-graph-client`
+- Replace `IntuneWinAppUtil.exe` packaging with Azure Container Instance (Windows, on-demand)
+- Switch `prisma db push` to `prisma migrate deploy` once migrations folder is generated
+- Wire Key Vault secret references into Container App env vars
 
 ---
 
