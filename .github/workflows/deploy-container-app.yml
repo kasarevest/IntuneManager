@@ -74,6 +74,10 @@ jobs:
         run: npx prisma db push --skip-generate --accept-data-loss
 
       # ── Deploy to Azure Container Apps ───────────────────────────────────────
+      # Azure login must be immediately before the deploy action.
+      # Any gap (other steps) can clear the session context and cause the
+      # deploy action to fall back to an Oryx source build, which fails
+      # because there is no source at that path on the runner.
       - name: Log in to Azure
         uses: azure/login@v2
         with:
@@ -90,3 +94,4 @@ jobs:
           registryPassword: ${{ secrets.GITHUB_TOKEN }}
           targetPort: 8080
           ingress: external
+          appSourcePath: none
