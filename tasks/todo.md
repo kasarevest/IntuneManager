@@ -122,12 +122,13 @@ Step 1 — Cleanup (delete uksouth resources)
 - [x] Azure Container App `ca-intunemanager-prod` deployed at `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io`
 - [x] `tasks/lessons.md` updated with Lesson 008 (Azure Container Apps deployment patterns)
 - [x] All documentation updated (PROJECT_OVERVIEW.md, README.md, USER_MANUAL.md, todo.md)
-- [ ] **CURRENT BLOCKER** — `prisma db push` fails with `P1000: Authentication failed`
-  - Root cause: `DATABASE_URL` GitHub secret has wrong password for `intuneadmin` on `sql-intunemanager-prod` (westus2)
-  - Fix: `az sql server update --name sql-intunemanager-prod --resource-group rg-intunemanager-prod --admin-password <NEW>` then update GitHub secret `DATABASE_URL` and re-run workflow
-- [ ] Verification: GitHub Actions workflow fully green (all steps including prisma db push)
+- [x] DATABASE_URL fixed — SQL admin password reset to alphanumeric-only (special chars broke Prisma URL parser)
+- [x] Server startup made non-blocking — `app.listen()` now called before `initializeAuth()` so health probes pass during SQL cold start
+- [x] Crash logging added — `uncaughtException` + `unhandledRejection` handlers log errors before exit
+- [x] Container App running — revision healthy, serving traffic
 - [ ] Verification: Container App URL loads React SPA login screen
 - [ ] Verification: `POST /api/auth/login` returns 200 with JWT
+- [ ] Set min-replicas back to 0 once verified (currently 1 for debugging)
 
 ---
 
