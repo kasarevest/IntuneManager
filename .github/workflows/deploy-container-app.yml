@@ -87,4 +87,8 @@ jobs:
           az containerapp update \
             --name ${{ env.CONTAINER_APP_NAME }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            --set-env-vars \
+              "AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" \
+              "AZURE_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}" \
+              "AZURE_REDIRECT_URI=https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io/api/auth/ms-callback"

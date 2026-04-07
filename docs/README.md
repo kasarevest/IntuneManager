@@ -27,6 +27,15 @@ Container App URL: `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.a
 
 CI/CD pushes to `master` branch trigger an automatic build and deploy.
 
+**Required GitHub Secrets for web deployment:**
+
+| Secret | Purpose |
+|--------|---------|
+| `AZURE_CREDENTIALS` | Service principal JSON for `az login` |
+| `DATABASE_URL` | Azure SQL connection string (sqlserver://) |
+| `AZURE_CLIENT_ID` | Azure AD App Registration client ID (Phase 3 tenant auth) |
+| `AZURE_CLIENT_SECRET` | Azure AD App Registration client secret (Phase 3 tenant auth) |
+
 ---
 
 ## Reviews

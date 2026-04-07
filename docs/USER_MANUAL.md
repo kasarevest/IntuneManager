@@ -1,6 +1,6 @@
 # IntuneManager — User Manual
 
-**Version:** 1.4 | **Audience:** IT Administrators | **Last Updated:** 2026-04-06
+**Version:** 1.5 | **Audience:** IT Administrators | **Last Updated:** 2026-04-07
 
 ---
 
@@ -75,7 +75,7 @@ IntuneManager runs in two modes:
 | Mode | How to access | Notes |
 |------|--------------|-------|
 | **Desktop (Electron)** | Double-click `IntuneManager.exe` | Windows only. Full functionality including tenant connect, packaging, and app deployment. |
-| **Web (Hosted)** | Open the Container App URL in a browser | Runs on Azure Container Apps (Linux). Tenant authentication and app packaging (requires IntuneWinAppUtil.exe) are not available in Phase 2 — these are replaced by the Graph SDK in Phase 3. Useful for monitoring dashboards, installed apps view, and device health remotely. |
+| **Web (Hosted)** | Open the Container App URL in a browser | Runs on Azure Container Apps (Linux). Tenant authentication via Microsoft OAuth2 is fully functional (Phase 3). App packaging (requires IntuneWinAppUtil.exe, Windows-only) is not yet available in the web container. All read/view features work: Dashboard, Installed Apps, Devices, App Catalog. |
 
 The hosted web URL is:
 ```
@@ -89,6 +89,21 @@ The Desktop mode instructions below apply to both modes except where noted.
 ## 2. Prerequisites
 
 Before running IntuneManager for the first time, ensure the following are in place:
+
+### Additional prerequisites for Web (Hosted) mode
+
+The following are required before the hosted web app can connect to your Microsoft tenant:
+
+| Requirement | How to set up |
+|-------------|--------------|
+| **Azure AD App Registration** | In `portal.azure.com` → Azure Active Directory → App registrations → New registration. Name: `IntuneManager Web`. Supported accounts: `Accounts in any organizational directory`. Redirect URI (Web): `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io/api/auth/ms-callback` |
+| **API permissions (Delegated)** | In the App Registration → API permissions → Add → Microsoft Graph → Delegated: `DeviceManagementApps.ReadWrite.All`, `DeviceManagementConfiguration.Read.All`, `User.Read` |
+| **Client secret** | In the App Registration → Certificates & secrets → New client secret. Copy the value immediately — it is only shown once |
+| **GitHub Secrets** | In your GitHub repo → Settings → Secrets → Actions: add `AZURE_CLIENT_ID` (Application ID) and `AZURE_CLIENT_SECRET` (secret value). The next CI/CD deploy will inject these into the Container App |
+
+> **Note:** The first time a user connects their tenant, Microsoft may prompt them to grant admin consent for the required permissions. A Global Administrator or Intune Administrator account is needed for this.
+
+---
 
 ### Required software (on the machine running IntuneManager)
 
@@ -196,22 +211,48 @@ See Section 4 for full instructions.
 
 IntuneManager needs to authenticate to your Microsoft 365 / Intune tenant to read and deploy apps.
 
-### How to connect
+### How to connect — Desktop (Electron)
 
 1. Click **Settings** → **Tenant**
-2. Click **Connect with Browser**
-   - Your default browser will open to `login.microsoft.com`
+2. Click **Sign in with Microsoft Account**
+   - A browser window opens to `login.microsoft.com`
    - Sign in with your Intune admin credentials
    - Close the browser tab when prompted ("Authentication complete")
 3. The Settings page will show your connected username and tenant ID
 
-**Alternative — Device Code (if browser popup is blocked)**
+**Alternative — Device Code (Desktop, if browser popup is blocked)**
 
-1. Click **Connect with Device Code** instead
-2. A code is displayed (e.g. `ABCD1234`)
-3. On any device, go to `https://microsoft.com/devicelogin`
-4. Enter the code and sign in
-5. Return to IntuneManager — it will detect the completed login
+1. Click **Use Device Code (for restricted environments)** instead
+2. A code is displayed (e.g. `ABCD-1234`)
+3. On any device, go to the URL shown on screen (e.g. `https://microsoft.com/devicelogin`)
+4. Enter the code and sign in with your Intune admin account
+5. IntuneManager polls every 5 seconds and detects the completed login automatically
+
+---
+
+### How to connect — Web (Hosted)
+
+1. Open the Container App URL and log in to IntuneManager
+2. Click **Settings** → **Tenant**
+3. Click **Sign in with Microsoft Account**
+   - The entire browser page navigates to Microsoft's login page (`login.microsoftonline.com`)
+   - Sign in with your Intune admin credentials
+   - After successful login, the browser returns automatically to IntuneManager
+4. The Settings → Tenant page now shows your connected username and tenant ID
+
+> **First-time consent:** On first connection from a new tenant, Microsoft may prompt for admin consent for the required Graph API permissions. This requires a Global Administrator or Intune Administrator account. Once granted, other accounts in the same tenant can sign in without the consent prompt.
+
+**Alternative — Device Code (Web, for restricted environments)**
+
+1. Click **Use Device Code (for restricted environments)** instead
+2. A panel appears in the app showing:
+   - A verification URL (e.g. `https://microsoft.com/devicelogin`)
+   - A short code (e.g. `ABCD-1234`)
+3. On any device (phone, another computer), go to the URL and enter the code
+4. Sign in with your Intune admin account on that device
+5. IntuneManager polls every 5 seconds — the panel closes and shows "Connected" automatically when auth completes
+
+---
 
 ### Connection status
 
@@ -219,13 +260,11 @@ The connection status is shown in the top bar of all pages:
 - **Green dot** — Connected (shows your username and minutes until token expiry)
 - **Red dot** — Not connected
 
-Tokens expire approximately 1 hour after connecting. IntuneManager will attempt a **silent refresh** automatically (no browser popup needed) as long as your refresh token is valid (typically 90 days).
+Tokens expire approximately 1 hour after connecting. IntuneManager silently refreshes the token automatically before expiry (no re-login needed) as long as the refresh token is valid (typically 90 days).
 
 The connection status is polled from the database every 60 seconds so it stays accurate as you navigate between pages.
 
-If you see a "Not connected" banner:
-1. Click **Connect Tenant** in the banner
-2. Complete the login as above
+If you see a "Not connected" banner, go to **Settings → Tenant** and sign in again.
 
 ---
 
@@ -574,10 +613,10 @@ After changing any setting, click **Save**.
 
 | Control | Description |
 |---------|-------------|
-| Connect with Browser | Opens Microsoft login in your browser |
-| Connect with Device Code | For environments where browser popup is blocked |
-| Disconnect | Clears the stored tenant connection |
-| Connected status | Shows username, tenant ID, and token expiry |
+| Sign in with Microsoft Account | **Desktop:** opens Microsoft login in a browser window. **Web:** redirects the full browser page to Microsoft login and returns automatically after auth |
+| Use Device Code (for restricted environments) | Displays a short code and URL to complete sign-in on another device; polls every 5 seconds for completion |
+| Disconnect | Clears the stored tenant connection (revokes local tokens; does not revoke the Azure AD session) |
+| Connected status | Shows username, tenant ID, and minutes until token expiry |
 
 ### Users Tab (superadmin only)
 
@@ -716,6 +755,7 @@ Manage local application accounts:
 | Session ends on window close | Must log in again each launch | By design — session tokens are not persisted |
 | Driver update status always "Unknown" | Devices page cannot report driver update status | Check device compliance in Intune portal directly |
 | Diagnostics button always active | No check for existing log collection requests | Creating a duplicate request is harmless |
+| Web mode: app packaging not available | IntuneWinAppUtil.exe is Windows-only; the Docker container cannot run it | Use the desktop (Electron) app for packaging new apps; web mode supports all read/view/connect features |
 
 ---
 
@@ -759,16 +799,27 @@ Devices -> Find device -> Sync Updates / Sync Drivers
 -> Intune queues the action; device executes on next check-in
 ```
 
-### First-time setup checklist
+### First-time setup checklist (Desktop)
 
 - [ ] Install IntuneWinAppUtil.exe
 - [ ] Launch IntuneManager, save generated password, log in
 - [ ] Settings → General → Claude AI Connection: configure Direct API Key **or** AWS Bedrock region + model ID
 - [ ] Settings → General → Paths: set IntuneWinAppUtil, Source Root, Output Folder
-- [ ] Settings → Tenant: Connect with Browser
+- [ ] Settings → Tenant: Sign in with Microsoft Account
 - [ ] Dashboard → verify stats load
 - [ ] Installed Apps → Sync: verify apps load
 - [ ] App Catalog: confirm recommendations load
+- [ ] Devices: verify device list loads
+
+### First-time setup checklist (Web / Hosted)
+
+- [ ] Create Azure AD App Registration (see Section 2 — Web prerequisites)
+- [ ] Add `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` to GitHub Secrets
+- [ ] Push to master → CI/CD deploys updated Container App
+- [ ] Open Container App URL, save generated password, log in
+- [ ] Settings → Tenant: Sign in with Microsoft Account (full-page redirect)
+- [ ] Dashboard → verify stats load
+- [ ] Installed Apps → Sync: verify apps load
 - [ ] Devices: verify device list loads
 
 ### Log file locations

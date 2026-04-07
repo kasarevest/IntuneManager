@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+param([string]$AccessToken = '')
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ErrorActionPreference = 'Stop'
@@ -8,6 +9,7 @@ try {
     Import-Module (Join-Path $LibPath 'Logger.psm1') -Force
     Import-Module (Join-Path $LibPath 'Auth.psm1') -Force
     Import-Module (Join-Path $LibPath 'GraphClient.psm1') -Force
+    if ($AccessToken) { Set-GraphAccessToken -Token $AccessToken }
 
     Write-AppLog 'Fetching Win32 app install statistics from Intune...'
 

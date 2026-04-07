@@ -1,12 +1,24 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import type { TenantInfo } from '../types/app'
-import { ipcPsGetTenantConfig, ipcPsConnectTenant, ipcPsDisconnectTenant } from '../lib/api'
+import { ipcPsGetTenantConfig, ipcPsDisconnectTenant } from '../lib/api'
+
+export interface DeviceCodeInfo {
+  userCode: string
+  verificationUri: string
+  message: string
+}
+
+interface ConnectResult {
+  success: boolean
+  error?: string
+  deviceCode?: DeviceCodeInfo
+}
 
 interface TenantContextValue {
   tenant: TenantInfo
   tenantChecked: boolean  // true once the initial DB status check has completed
   refreshStatus: () => Promise<void>
-  connect: (useDeviceCode?: boolean) => Promise<{ success: boolean; error?: string }>
+  connect: (useDeviceCode?: boolean) => Promise<ConnectResult>
   disconnect: () => Promise<void>
 }
 
@@ -17,8 +29,6 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
   const [tenantChecked, setTenantChecked] = useState(false)
 
   const refreshStatus = useCallback(async () => {
-    // Also called on-demand from individual pages
-    // Read from DB-persisted tenant config — not from PS process state (which is ephemeral)
     const res = await ipcPsGetTenantConfig()
     setTenant({
       isConnected: res.isConnected ?? false,
@@ -29,32 +39,48 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
     setTenantChecked(true)
   }, [])
 
-  // Load tenant state on app start, then re-check every 60 s so the topbar
-  // status and expiresInMinutes stay accurate across all pages without each
-  // page needing to call refreshStatus() manually.
   useEffect(() => {
     refreshStatus()
     const interval = setInterval(refreshStatus, 60_000)
     return () => clearInterval(interval)
   }, [refreshStatus])
 
-  const connect = useCallback(async (useDeviceCode = false) => {
-    const res = await ipcPsConnectTenant(useDeviceCode)
-    if (res.success) {
-      // Use the data returned directly from connect — don't call refreshStatus()
-      // which spawns a new PS process with no auth state (module state doesn't persist between processes)
-      const expiry = res.tokenExpiry ? new Date(res.tokenExpiry) : null
-      const expiresInMinutes = expiry ? Math.round((expiry.getTime() - Date.now()) / 60000) : undefined
-      setTenant({
-        isConnected: true,
-        username: res.username,
-        tenantId: res.tenantId,
-        expiresInMinutes
-      })
-      setTenantChecked(true)
+  const connect = useCallback(async (useDeviceCode = false): Promise<ConnectResult> => {
+    if (!useDeviceCode) {
+      // OAuth2 Authorization Code Flow — redirect the browser to Microsoft login.
+      // The server will exchange the code and save tokens; after redirect back to /
+      // the 60s poll will pick up the connected state.
+      window.location.href = '/api/auth/ms-login'
       return { success: true }
     }
-    return { success: false, error: res.error ?? 'Connection failed' }
+
+    // Device Code Flow — ask server to start polling, return code info to display
+    try {
+      const res = await fetch('/api/auth/ms-device-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(() => {
+            const token = sessionStorage.getItem('intunemanager_session')
+            return token ? { Authorization: `Bearer ${token}` } : {}
+          })()
+        }
+      })
+      const data = await res.json() as { success: boolean; userCode?: string; verificationUri?: string; message?: string; error?: string }
+      if (!data.success) {
+        return { success: false, error: data.error ?? 'Device code request failed' }
+      }
+      return {
+        success: true,
+        deviceCode: {
+          userCode: data.userCode!,
+          verificationUri: data.verificationUri!,
+          message: data.message ?? ''
+        }
+      }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
   }, [])
 
   const disconnect = useCallback(async () => {

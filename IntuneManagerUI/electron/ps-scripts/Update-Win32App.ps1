@@ -1,5 +1,5 @@
 ﻿#Requires -Version 5.1
-param([string]$AppId, [string]$BodyJson)
+param([string]$AppId, [string]$BodyJson, [string]$AccessToken = '')
 
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -15,6 +15,7 @@ try {
     Import-Module (Join-Path $LibPath 'Logger.psm1') -Force
     Import-Module (Join-Path $LibPath 'Auth.psm1') -Force
     Import-Module (Join-Path $LibPath 'GraphClient.psm1') -Force
+    if ($AccessToken) { Set-GraphAccessToken -Token $AccessToken }
 
     $body = $BodyJson | ConvertFrom-Json
 

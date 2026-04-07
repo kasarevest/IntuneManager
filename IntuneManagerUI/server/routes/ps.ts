@@ -6,6 +6,7 @@ import { runPsScript } from '../services/ps-bridge'
 import { getCached, saveCache } from '../services/cache'
 import { sseManager } from '../sse'
 import prisma from '../db'
+import { getAccessToken, GraphAuthError } from '../services/graph-auth'
 
 const router = Router()
 
@@ -25,55 +26,53 @@ router.get('/api/ps/tenant-config', requireAuth as import('express').RequestHand
 })
 
 // POST /api/ps/connect-tenant
+// Phase 3: device-code path delegates to graph-auth.ts (MSAL node).
+// Non-device-code path is handled by the browser redirect at GET /api/auth/ms-login.
 router.post('/api/ps/connect-tenant', requireAuth as import('express').RequestHandler, async (req, res) => {
   const { useDeviceCode } = req.body as { useDeviceCode?: boolean }
-  const args = useDeviceCode ? ['-DeviceCode'] : []
-  const result = await runPsScript('Connect-Tenant.ps1', args, undefined, undefined, true)
-  const r = result.result ?? { success: false, error: `No result from PS script. Stderr: ${result.rawStderr.join(' | ')}` }
-  if ((r as Record<string, unknown>).success) {
-    try {
-      const rr = r as Record<string, unknown>
-      await prisma.tenantConfig.upsert({
-        where: { id: 1 },
-        update: {
-          tenant_id: (rr.tenantId as string) ?? null,
-          username: (rr.username as string) ?? null,
-          token_expiry: (rr.tokenExpiry as string) ?? null,
-          updated_at: new Date()
-        },
-        create: {
-          id: 1,
-          tenant_id: (rr.tenantId as string) ?? null,
-          username: (rr.username as string) ?? null,
-          token_expiry: (rr.tokenExpiry as string) ?? null
-        }
-      })
-    } catch { /* non-fatal */ }
+  if (!useDeviceCode) {
+    res.json({ success: false, error: 'Use the browser sign-in flow: navigate to /api/auth/ms-login' })
+    return
   }
-  res.json(r)
+  // Device code flow is started from POST /api/auth/ms-device-code (ms-auth router).
+  // This legacy endpoint returns a redirect hint for any callers still using it.
+  res.json({ success: false, error: 'Use POST /api/auth/ms-device-code for the device code flow' })
 })
 
 // DELETE /api/ps/tenant
-router.delete('/api/ps/tenant', requireAuth as import('express').RequestHandler, async (req, res) => {
+// Phase 3: server manages tokens — just clear the DB row. No PS process needed.
+router.delete('/api/ps/tenant', requireAuth as import('express').RequestHandler, async (_req, res) => {
   try { await prisma.tenantConfig.deleteMany({ where: { id: 1 } }) } catch { /* non-fatal */ }
-  const result = await runPsScript('Disconnect-Tenant.ps1', [])
-  res.json(result.result ?? { success: true })
+  res.json({ success: true })
 })
 
 // GET /api/ps/auth-status
+// Phase 3: read from DB directly — no PS process needed.
 router.get('/api/ps/auth-status', requireAuth as import('express').RequestHandler, async (_req, res) => {
-  const result = await runPsScript('Get-AuthStatus.ps1', [])
-  res.json(result.result ?? { isConnected: false })
+  try {
+    const row = await prisma.tenantConfig.findUnique({ where: { id: 1 } })
+    if (!row?.username || !row?.access_token) { res.json({ isConnected: false }); return }
+    const expiry = row.token_expiry ? new Date(row.token_expiry) : null
+    const expiresInMinutes = expiry ? Math.round((expiry.getTime() - Date.now()) / 60000) : undefined
+    res.json({ isConnected: true, username: row.username, tenantId: row.tenant_id, expiresInMinutes })
+  } catch {
+    res.json({ isConnected: false })
+  }
 })
 
 // GET /api/ps/intune-apps
 router.get('/api/ps/intune-apps', requireAuth as import('express').RequestHandler, async (req, res) => {
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
   const cacheKey = 'cache_db_apps'
   const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
-        const r = await runPsScript('Get-IntuneApps.ps1', [])
+        const r = await runPsScript('Get-IntuneApps.ps1', ['-AccessToken', accessToken])
         const fresh = r.result ?? { success: false, error: 'No result from PS script' }
         if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:apps-updated', fresh)
@@ -81,7 +80,7 @@ router.get('/api/ps/intune-apps', requireAuth as import('express').RequestHandle
     })
     res.json({ ...cached, fromCache: true }); return
   }
-  const result = await runPsScript('Get-IntuneApps.ps1', [])
+  const result = await runPsScript('Get-IntuneApps.ps1', ['-AccessToken', accessToken])
   const data = result.result ?? { success: false, error: 'No result from PS script' }
   if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
@@ -89,12 +88,17 @@ router.get('/api/ps/intune-apps', requireAuth as import('express').RequestHandle
 
 // GET /api/ps/devices
 router.get('/api/ps/devices', requireAuth as import('express').RequestHandler, async (req, res) => {
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, devices: [], error: e.message }); return }
+    throw e
+  }
   const cacheKey = 'cache_db_devices'
   const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
-        const r = await runPsScript('Get-IntuneDevices.ps1', [])
+        const r = await runPsScript('Get-IntuneDevices.ps1', ['-AccessToken', accessToken])
         const fresh = r.result ?? { success: false, devices: [], error: 'No result from PS script' }
         if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:devices-updated', fresh)
@@ -102,7 +106,7 @@ router.get('/api/ps/devices', requireAuth as import('express').RequestHandler, a
     })
     res.json({ ...cached, fromCache: true }); return
   }
-  const result = await runPsScript('Get-IntuneDevices.ps1', [])
+  const result = await runPsScript('Get-IntuneDevices.ps1', ['-AccessToken', accessToken])
   const data = result.result ?? { success: false, devices: [], error: 'No result from PS script' }
   if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
@@ -161,7 +165,12 @@ router.post('/api/ps/upload-app', requireAuth as import('express').RequestHandle
   const { appId, intunewinPath, jobId } = req.body as {
     appId: string; intunewinPath: string; jobId?: string
   }
-  const args = ['-AppId', appId, '-IntunewinPath', intunewinPath]
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
+  const args = ['-AppId', appId, '-IntunewinPath', intunewinPath, '-AccessToken', accessToken]
 
   const result = await runPsScript('Upload-App.ps1', args, (msg, level) => {
     if (jobId) sendToRenderer('job:log', { jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
@@ -172,8 +181,13 @@ router.post('/api/ps/upload-app', requireAuth as import('express').RequestHandle
 // POST /api/ps/new-win32-app
 router.post('/api/ps/new-win32-app', requireAuth as import('express').RequestHandler, async (req, res) => {
   const { body: appBody, jobId } = req.body as { body: Record<string, unknown>; jobId?: string }
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
   const bodyJson = JSON.stringify(appBody)
-  const result = await runPsScript('New-Win32App.ps1', ['-BodyJson', bodyJson], (msg, level) => {
+  const result = await runPsScript('New-Win32App.ps1', ['-BodyJson', bodyJson, '-AccessToken', accessToken], (msg, level) => {
     if (jobId) sendToRenderer('job:log', { jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
   })
   res.json(result.result ?? { success: false, error: 'Create app failed' })
@@ -182,8 +196,13 @@ router.post('/api/ps/new-win32-app', requireAuth as import('express').RequestHan
 // POST /api/ps/update-win32-app
 router.post('/api/ps/update-win32-app', requireAuth as import('express').RequestHandler, async (req, res) => {
   const { appId, body: appBody, jobId } = req.body as { appId: string; body: Record<string, unknown>; jobId?: string }
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
   const bodyJson = JSON.stringify(appBody)
-  const result = await runPsScript('Update-Win32App.ps1', ['-AppId', appId, '-BodyJson', bodyJson], (msg, level) => {
+  const result = await runPsScript('Update-Win32App.ps1', ['-AppId', appId, '-BodyJson', bodyJson, '-AccessToken', accessToken], (msg, level) => {
     if (jobId) sendToRenderer('job:log', { jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
   })
   res.json(result.result ?? { success: false, error: 'Update app failed' })
@@ -249,12 +268,17 @@ router.post('/api/ps/write-script', requireAuth as import('express').RequestHand
 
 // GET /api/ps/app-install-stats
 router.get('/api/ps/app-install-stats', requireAuth as import('express').RequestHandler, async (req, res) => {
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, apps: [], error: e.message }); return }
+    throw e
+  }
   const cacheKey = 'cache_db_install_stats'
   const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
-        const r = await runPsScript('Get-AppInstallStats.ps1', [])
+        const r = await runPsScript('Get-AppInstallStats.ps1', ['-AccessToken', accessToken])
         const fresh = r.result ?? { success: false, apps: [], error: 'No result from PS script' }
         if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:install-stats-updated', fresh)
@@ -262,7 +286,7 @@ router.get('/api/ps/app-install-stats', requireAuth as import('express').Request
     })
     res.json({ ...cached, fromCache: true }); return
   }
-  const result = await runPsScript('Get-AppInstallStats.ps1', [])
+  const result = await runPsScript('Get-AppInstallStats.ps1', ['-AccessToken', accessToken])
   const data = result.result ?? { success: false, apps: [], error: 'No result from PS script' }
   if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
@@ -270,12 +294,17 @@ router.get('/api/ps/app-install-stats', requireAuth as import('express').Request
 
 // GET /api/ps/update-states
 router.get('/api/ps/update-states', requireAuth as import('express').RequestHandler, async (req, res) => {
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, summary: {}, states: [], error: e.message }); return }
+    throw e
+  }
   const cacheKey = 'cache_db_update_states'
   const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
-        const r = await runPsScript('Get-UpdateStates.ps1', [])
+        const r = await runPsScript('Get-UpdateStates.ps1', ['-AccessToken', accessToken])
         const fresh = r.result ?? { success: false, summary: {}, states: [], error: 'No result from PS script' }
         if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:update-states-updated', fresh)
@@ -283,7 +312,7 @@ router.get('/api/ps/update-states', requireAuth as import('express').RequestHand
     })
     res.json({ ...cached, fromCache: true }); return
   }
-  const result = await runPsScript('Get-UpdateStates.ps1', [])
+  const result = await runPsScript('Get-UpdateStates.ps1', ['-AccessToken', accessToken])
   const data = result.result ?? { success: false, summary: {}, states: [], error: 'No result from PS script' }
   if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
@@ -291,12 +320,17 @@ router.get('/api/ps/update-states', requireAuth as import('express').RequestHand
 
 // GET /api/ps/uea-scores
 router.get('/api/ps/uea-scores', requireAuth as import('express').RequestHandler, async (req, res) => {
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, overview: null, appHealth: [], error: e.message }); return }
+    throw e
+  }
   const cacheKey = 'cache_db_uea_scores'
   const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
-        const r = await runPsScript('Get-UEAScores.ps1', [])
+        const r = await runPsScript('Get-UEAScores.ps1', ['-AccessToken', accessToken])
         const fresh = r.result ?? { success: false, overview: null, appHealth: [], error: 'No result from PS script' }
         if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:uea-scores-updated', fresh)
@@ -304,7 +338,7 @@ router.get('/api/ps/uea-scores', requireAuth as import('express').RequestHandler
     })
     res.json({ ...cached, fromCache: true }); return
   }
-  const result = await runPsScript('Get-UEAScores.ps1', [])
+  const result = await runPsScript('Get-UEAScores.ps1', ['-AccessToken', accessToken])
   const data = result.result ?? { success: false, overview: null, appHealth: [], error: 'No result from PS script' }
   if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)
@@ -312,12 +346,17 @@ router.get('/api/ps/uea-scores', requireAuth as import('express').RequestHandler
 
 // GET /api/ps/autopilot-events
 router.get('/api/ps/autopilot-events', requireAuth as import('express').RequestHandler, async (req, res) => {
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, events: [], error: e.message }); return }
+    throw e
+  }
   const cacheKey = 'cache_db_autopilot_events'
   const cached = await getCached(cacheKey)
   if (cached) {
     setImmediate(async () => {
       try {
-        const r = await runPsScript('Get-AutopilotEvents.ps1', [])
+        const r = await runPsScript('Get-AutopilotEvents.ps1', ['-AccessToken', accessToken])
         const fresh = r.result ?? { success: false, events: [], error: 'No result from PS script' }
         if ((fresh as Record<string, unknown>).success) await saveCache(cacheKey, fresh as Record<string, unknown>)
         sendToRenderer('ipc:cache:autopilot-events-updated', fresh)
@@ -325,7 +364,7 @@ router.get('/api/ps/autopilot-events', requireAuth as import('express').RequestH
     })
     res.json({ ...cached, fromCache: true }); return
   }
-  const result = await runPsScript('Get-AutopilotEvents.ps1', [])
+  const result = await runPsScript('Get-AutopilotEvents.ps1', ['-AccessToken', accessToken])
   const data = result.result ?? { success: false, events: [], error: 'No result from PS script' }
   if ((data as Record<string, unknown>).success) await saveCache(cacheKey, data as Record<string, unknown>)
   res.json(data)

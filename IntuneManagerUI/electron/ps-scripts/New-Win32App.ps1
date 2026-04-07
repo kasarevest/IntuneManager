@@ -1,6 +1,7 @@
 #Requires -Version 5.1
 param(
-    [string]$BodyJsonPath   # Path to a temp file containing the JSON body (avoids PS 5.1 arg-mangling)
+    [string]$BodyJsonPath,   # Path to a temp file containing the JSON body (avoids PS 5.1 arg-mangling)
+    [string]$AccessToken = ''
 )
 
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -17,6 +18,7 @@ try {
     Import-Module (Join-Path $LibPath 'Logger.psm1') -Force
     Import-Module (Join-Path $LibPath 'Auth.psm1') -Force
     Import-Module (Join-Path $LibPath 'GraphClient.psm1') -Force
+    if ($AccessToken) { Set-GraphAccessToken -Token $AccessToken }
 
     # Read JSON from temp file (avoids PS 5.1 command-line argument mangling of { } : " chars)
     if (-not $BodyJsonPath -or -not (Test-Path $BodyJsonPath)) {
@@ -29,7 +31,7 @@ try {
 
     # Post the JSON directly via HttpWebRequest to bypass ConvertTo-Hashtable / ConvertTo-Json
     # round-trip issues in PS 5.1 (single-element arrays become objects, @odata keys lost, etc.)
-    $token = Get-ValidAccessToken
+    $token = if ($AccessToken) { $AccessToken } else { Get-ValidAccessToken }
     $uri = 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps'
     $req = [System.Net.HttpWebRequest]::Create($uri)
     $req.Method = 'POST'

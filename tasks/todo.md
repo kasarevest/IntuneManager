@@ -152,11 +152,34 @@ Step 1 — Cleanup (delete uksouth resources)
 
 **Key lessons captured:** Lesson 011 in `tasks/lessons.md`
 
-**Phase 3 items (technical debt):**
-- Replace MSAL.NET PS scripts with `@azure/identity` + `@microsoft/microsoft-graph-client`
-- Replace `IntuneWinAppUtil.exe` packaging with Azure Container Instance (Windows, on-demand)
-- Switch `prisma db push` to `prisma migrate deploy` once migrations folder is generated
-- Wire Key Vault secret references into Container App env vars
+**Phase 3 items (IN PROGRESS):**
+- [x] Replace MSAL.NET tenant auth with `@azure/msal-node` OAuth2 server-side flow
+  - [x] `server/services/graph-auth.ts` — MSAL ConfidentialClientApplication, getAccessToken/getAuthUrl/handleCallback/startDeviceCodeFlow
+  - [x] `server/routes/ms-auth.ts` — GET /api/auth/ms-login, GET /api/auth/ms-callback, POST /api/auth/ms-device-code
+  - [x] `server/index.ts` — msAuthRouter mounted
+  - [x] `server/routes/ps.ts` — all Graph routes pass -AccessToken; connect-tenant simplified; disconnect simplified
+  - [x] `server/prisma/schema.prisma` — access_token + refresh_token columns added
+  - [x] `IntuneManager/Lib/GraphClient.psm1` — Set-GraphAccessToken + $script:InjectedToken added
+  - [x] All 9 Graph-calling PS scripts — -AccessToken param + Set-GraphAccessToken call added
+  - [x] `src/contexts/TenantContext.tsx` — connect() redirects to /api/auth/ms-login (OAuth) or POSTs /api/auth/ms-device-code
+  - [x] `src/settings/TenantTab.tsx` — device code panel with user code + polling
+  - [x] `.github/workflows/deploy-container-app.yml` — passes AZURE_CLIENT_ID/SECRET/REDIRECT_URI
+  - [ ] **USER ACTION REQUIRED:** Create Azure AD App Registration (see below)
+  - [ ] **USER ACTION REQUIRED:** Add AZURE_CLIENT_ID + AZURE_CLIENT_SECRET to GitHub Secrets
+  - [ ] Push to master → CI/CD deploys
+  - [ ] Verify: sign-in flow, apps list, devices list load
+- [ ] Replace `IntuneWinAppUtil.exe` packaging with Azure Container Instance (Windows, on-demand)
+- [ ] Switch `prisma db push` to `prisma migrate deploy` once migrations folder is generated
+- [ ] Wire Key Vault secret references into Container App env vars
+
+**Azure AD App Registration steps:**
+1. Go to portal.azure.com → Azure Active Directory → App registrations → New registration
+2. Name: `IntuneManager Web`, Supported account types: `Accounts in any organizational directory`
+3. Redirect URI (Web): `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io/api/auth/ms-callback`
+4. After creation: API permissions → Add → Microsoft Graph → Delegated → add: `DeviceManagementApps.ReadWrite.All`, `DeviceManagementConfiguration.Read.All`, `User.Read`
+5. Certificates & secrets → New client secret → copy the value immediately
+6. Copy the Application (client) ID from the Overview page
+7. Add to GitHub Secrets (repo Settings → Secrets → Actions): `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`
 
 ---
 
@@ -182,18 +205,23 @@ Step 1 — Cleanup (delete uksouth resources)
 ### Technical Debt Log
 | Item | Trade-off | Resolution path |
 |---|---|---|
-| `Connect-Tenant.ps1` uses MSAL.NET (.NET Framework) — fails on Linux pwsh | Phase 2 accepts broken tenant connect; auth flow uses existing DB value | Phase 3: replace with `@azure/identity` + `@microsoft/microsoft-graph-client` |
-| `IntuneWinAppUtil.exe` Windows-only — not in Linux container | AI agent `build_package` tool will fail | Phase 3: Azure Container Instance (Windows, pay-per-second) triggered on demand |
-| In-memory `SSEManager` — single instance only | Fine for initial deployment; breaks if scaled to >1 replica | Phase 4: Azure Service Bus topic for fan-out |
+| ~~`Connect-Tenant.ps1` uses MSAL.NET (.NET Framework) — fails on Linux pwsh~~ | ~~Phase 2 accepts broken tenant connect~~ | **RESOLVED Phase 3:** replaced with `@azure/msal-node` OAuth2 server-side flow; PS scripts receive token via `-AccessToken` param |
+| `IntuneWinAppUtil.exe` Windows-only — not in Linux container | AI agent `build_package` tool will fail | Phase 4: Azure Container Instance (Windows, pay-per-second) triggered on demand |
+| In-memory `SSEManager` — single instance only | Fine for initial deployment; breaks if scaled to >1 replica | Phase 5: Azure Service Bus topic for fan-out |
+| `prisma db push` instead of `prisma migrate deploy` | No migrations folder yet; data-loss flag accepted | Generate migrations locally (`prisma migrate dev --name init`), commit, switch CI step |
 
 ---
 
-### Verification Criteria (Definition of Done)
-- [ ] `https://<static-web-app>.azurestaticapps.net` loads the React SPA login screen
-- [ ] `POST /api/auth/login` returns 200 with JWT (default admin credentials)
-- [ ] `GET /api/ps/tenant-config` returns `{ isConnected: false }` (DB connected, PS bridge not tested in Phase 2)
+### Verification Criteria (Phase 3 — Definition of Done)
+- [ ] GitHub Actions workflow runs green on push to master (new `AZURE_CLIENT_ID`/`SECRET` secrets set)
+- [ ] `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io` loads the React SPA login screen
+- [ ] `POST /api/auth/login` returns 200 with JWT
 - [ ] `GET /api/events` returns `text/event-stream` content-type with ping frames
-- [ ] GitHub Actions workflow runs green on push to main
+- [ ] Settings → Tenant: "Sign in with Microsoft Account" redirects to `login.microsoftonline.com`
+- [ ] After login, browser returns to app; Settings → Tenant shows Connected ✓ with username
+- [ ] Apps tab: Intune apps list loads (Graph call with injected token succeeds)
+- [ ] Devices tab: device list loads
+- [ ] "Use Device Code" button: shows code + URL panel; completes on authentication
 
 ---
 

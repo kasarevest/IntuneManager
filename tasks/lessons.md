@@ -715,6 +715,47 @@ The Pivot Rule was triggered after adjustment #2 but not acted on until adjustme
 
 ---
 
+## Lesson 012 — Phase 3: MSAL.NET → @azure/msal-node OAuth2 Migration (2026-04-07)
+
+### Keywords
+`azure`, `msal-node`, `oauth2`, `authorization-code-flow`, `device-code-flow`, `token-encryption`, `graph-api`, `powershell-token-injection`, `phase3`, `container-apps`, `linux`, `dpapi`
+
+### What Happened
+
+Replaced PS-based MSAL.NET tenant authentication with server-side `@azure/msal-node` OAuth2 to fix tenant auth in the Linux Docker container. The root cause of the original failure: `Microsoft.Identity.Client.dll` (MSAL 4.43.2) targets `.NET Framework 4.6.1` — it cannot be loaded by `pwsh` on Linux which uses `.NET Core`. DPAPI (used for token cache encryption in `Auth.psm1`) is also Windows-only.
+
+The Phase 3 solution keeps PS scripts for Graph API calls but removes MSAL from their responsibility entirely. The server fetches tokens via `@azure/msal-node` and injects them into each PS script call.
+
+### Anti-Pattern (Why It Happened)
+
+**The PS script layer was responsible for both authentication and data fetching.** This works on Windows (PS 5.1 + MSAL.NET + DPAPI), but the tight coupling makes auth impossible to fix without touching every script. Separating auth (server) from data fetching (PS) at Phase 2 would have been cleaner, but was deferred as technical debt.
+
+**DPAPI is a Windows-only API.** Any token cache that uses DPAPI is silently non-functional on Linux. There is no DPAPI equivalent on Linux — token persistence must use a different mechanism (here: AES-256-CBC with app secret + DB storage).
+
+### Heuristic (Prevention)
+
+1. **When targeting Linux/cross-platform, never use DPAPI or .NET Framework DLLs for token caching.** Use a database or file with AES encryption keyed by an env var secret.
+2. **Authentication should be a server-layer concern, not a script concern.** Scripts should receive a pre-validated token as a parameter, not manage their own auth lifecycle.
+3. **Check DLL target frameworks before deploying PS modules to Linux.** `[System.Reflection.Assembly]::LoadFile('path.dll').ImageRuntimeVersion` returns `v4.0.30319` for .NET Framework, which fails on Linux `pwsh`.
+4. **`acquireTokenByDeviceCode` is blocking — it polls until the user completes auth or the code expires.** Wrap it in a Promise that resolves immediately with the code info (resolving from the `deviceCodeCallback`), then lets the token acquisition continue in the background.
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---------|----------------|
+| MSAL ConfidentialClientApplication setup | `new msal.ConfidentialClientApplication({ auth: { clientId, authority: 'https://login.microsoftonline.com/organizations', clientSecret } })` — use `organizations` authority for multi-tenant delegated access |
+| OAuth2 Authorization Code Flow | `getAuthCodeUrl({ scopes, redirectUri, state })` → redirect browser → `acquireTokenByCode({ code, scopes, redirectUri })` |
+| Device code flow (non-blocking return) | Resolve the outer Promise inside `deviceCodeCallback` with `{ userCode, verificationUri, message }`; let `acquireTokenByDeviceCode` polling continue async; save tokens in `.then()` |
+| Token refresh pattern | Check `token_expiry` from DB; if >5 min remaining, decrypt and return; else call `acquireTokenByRefreshToken({ refreshToken, scopes })` and save new tokens |
+| Token storage in DB | `encrypt(accessToken)` + `encrypt(refreshToken)` stored in `tenant_config.access_token` / `tenant_config.refresh_token`; `token_expiry` as ISO string. Use existing `encryption.ts` (AES-256-CBC keyed by `APP_SECRET_KEY`) |
+| PS token injection | Server calls `getAccessToken()` before each Graph PS route; passes result as `['-AccessToken', token]` to `runPsScript()` |
+| `Set-GraphAccessToken` pattern (PS) | Add `$script:InjectedToken = $null` module variable + `Set-GraphAccessToken` function to `GraphClient.psm1`; in `Invoke-GraphRequest`: `$token = if ($script:InjectedToken) { $script:InjectedToken } else { Get-ValidAccessToken }` |
+| PS script backward compatibility | Add `[string]$AccessToken = ''` to each script's `param()` block + `if ($AccessToken) { Set-GraphAccessToken -Token $AccessToken }` after imports — scripts still work on Windows desktop (no token passed) |
+| GraphAuthError sentinel | Export a named error class `GraphAuthError extends Error` from `graph-auth.ts`; catch it in routes and return 401 rather than 500 |
+| Azure AD App Registration requirement | OAuth2 Authorization Code + Device Code flows require a registered app with a client ID + secret. This is a manual Azure portal step that cannot be automated. Document it prominently as a prerequisite before the first deploy |
+
+---
+
 ## Lesson Template (copy for new entries)
 
 ```

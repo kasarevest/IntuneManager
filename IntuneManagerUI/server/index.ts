@@ -17,6 +17,7 @@ import path from 'path'
 import prisma from './db'
 import { initializeAuth } from './routes/auth'
 import authRouter from './routes/auth'
+import msAuthRouter from './routes/ms-auth'
 import settingsRouter from './routes/settings'
 import psRouter from './routes/ps'
 import aiRouter from './routes/ai'
@@ -43,6 +44,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }))
 
 app.use(eventsRouter)
 app.use(authRouter)
+app.use(msAuthRouter)
 app.use(settingsRouter)
 app.use(psRouter)
 app.use(aiRouter)

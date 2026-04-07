@@ -1,6 +1,6 @@
 # IntuneManager — Project Overview
 
-**Last Updated:** 2026-04-06
+**Last Updated:** 2026-04-07
 
 ## What is IntuneManager?
 
@@ -209,13 +209,15 @@ IntuneManagerUI/Dockerfile
 4. actions/setup-node + npm install (server deps)
 5. npx prisma db push --skip-generate --accept-data-loss
 6. azure/login (AZURE_CREDENTIALS secret)
-7. azure/container-apps-deploy-action → ca-intunemanager-prod
+7. az containerapp update --image ... --set-env-vars AZURE_CLIENT_ID/SECRET/REDIRECT_URI
 ```
 
 **Required GitHub Secrets:**
 - `AZURE_CREDENTIALS` — Service principal JSON (`az ad sp create-for-rbac --json-auth`)
 - `DATABASE_URL` — Full SQL Server connection string:
   `sqlserver://sql-intunemanager-prod.database.windows.net:1433;database=intunemanager;user=intuneadmin;password=<PWD>;encrypt=true;trustServerCertificate=false;connectionTimeout=60;loginTimeout=60`
+- `AZURE_CLIENT_ID` — Azure AD App Registration Application (client) ID
+- `AZURE_CLIENT_SECRET` — Azure AD App Registration client secret value
 
 ### Database (Web Mode)
 
@@ -240,7 +242,7 @@ const psBin = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
 
 On Linux (Container Apps) it spawns `pwsh` (PowerShell 7, installed in the Docker runtime stage). On Windows (desktop Electron) it spawns `powershell.exe` (5.1). Kill also uses platform-appropriate commands (`kill -9` vs `taskkill /f /t`).
 
-**Known limitation:** PS scripts that load `Microsoft.Identity.Client.dll` (MSAL.NET, .NET Framework) will fail on Linux `pwsh`. This affects tenant authentication (Connect-Tenant.ps1). This is accepted technical debt for Phase 2 — the Graph SDK will replace MSAL-based scripts in Phase 3.
+**Phase 3 change:** PS scripts no longer manage MSAL authentication. `server/services/graph-auth.ts` calls `getAccessToken()` before each Graph PS call and passes the token as `-AccessToken` to the script. `GraphClient.psm1` checks `$script:InjectedToken` first, falling back to `Get-ValidAccessToken` (MSAL.NET, desktop only) only when no injected token is present. `Connect-Tenant.ps1` and `Get-AuthStatus.ps1` are no longer called from the web server.
 
 ### Server-Side Caching (Web Mode)
 
@@ -393,7 +395,9 @@ The Dashboard (`/dashboard`) provides an at-a-glance view of both app inventory 
 
 1. **Local app auth** — bcrypt password hashing (cost 12), UUID sessions stored in `sessions` table, `sessionStorage` in renderer. Expires after 8 hours or window close.
 
-2. **Microsoft tenant auth** — MSAL.NET via `Auth.psm1`. Uses Microsoft Graph PowerShell client ID (`14d82eec-204b-4c2f-b7e8-296a70dab67e`, pre-consented in all M365 tenants). Supports browser-based interactive login and device code flow. Token cache is DPAPI-encrypted per-user. Token expiry is stored in `tenant_config.token_expiry` and updated on each connect.
+2. **Microsoft tenant auth** — Two implementations depending on deployment mode:
+   - **Desktop (Electron):** MSAL.NET via `Auth.psm1` (Microsoft Graph PowerShell client ID `14d82eec-204b-4c2f-b7e8-296a70dab67e`, pre-consented in M365 tenants). Browser-based interactive login and device code flow. Token cache is DPAPI-encrypted per-user.
+   - **Web (Container Apps):** `@azure/msal-node` `ConfidentialClientApplication` via `server/services/graph-auth.ts`. Supports OAuth2 Authorization Code Flow (full-page browser redirect) and Device Code Flow. Tokens are AES-256-CBC encrypted (keyed by `APP_SECRET_KEY`) and stored in `tenant_config.access_token` / `tenant_config.refresh_token`. Auto-refreshes when token has less than 5 minutes remaining. Requires an Azure AD App Registration (`AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` env vars).
 
 ---
 
@@ -507,7 +511,16 @@ IntuneManager\
 │   │   │   └── schema.prisma  <- Prisma schema (sqlserver provider, debian-openssl-3.0.x binary)
 │   │   ├── services\
 │   │   │   ├── ps-bridge.ts   <- Server-side PowerShell spawn (platform-aware)
-│   │   │   └── cache.ts       <- Prisma-backed key-value cache (replaces better-sqlite3 in web mode)
+│   │   │   ├── cache.ts       <- Prisma-backed key-value cache (replaces better-sqlite3 in web mode)
+│   │   │   ├── graph-auth.ts  <- @azure/msal-node OAuth2 service (getAuthUrl/handleCallback/startDeviceCodeFlow/getAccessToken)
+│   │   │   └── encryption.ts  <- AES-256-CBC encrypt/decrypt (keyed by APP_SECRET_KEY)
+│   │   ├── routes\
+│   │   │   ├── auth.ts        <- Local auth endpoints (login, session, users)
+│   │   │   ├── ms-auth.ts     <- Microsoft OAuth2 endpoints (ms-login, ms-callback, ms-device-code)
+│   │   │   ├── ps.ts          <- PS bridge endpoints (Graph routes inject -AccessToken)
+│   │   │   ├── settings.ts    <- App settings endpoints
+│   │   │   ├── ai.ts          <- AI agent endpoints
+│   │   │   └── events.ts      <- SSE streaming endpoint
 │   │   └── package.json
 │   └── package.json
 │
@@ -566,8 +579,9 @@ IntuneManager\
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `express` | ^4 | HTTP server |
-| `@prisma/client` | ^5 | SQL Server ORM |
+| `@prisma/client` | ^6 | SQL Server ORM |
 | `@anthropic-ai/sdk` | ^0.36.3 | Claude API client |
+| `@azure/msal-node` | ^2.16 | Microsoft OAuth2 (Authorization Code + Device Code flows) |
 | `bcryptjs` | ^2.4.3 | Password hashing |
 | `jsonwebtoken` | ^9 | JWT session tokens |
 | `cors` | ^2 | CORS middleware |
@@ -611,7 +625,7 @@ IntuneManager\
 
 10. **Device diagnostics shows 'Request Logs' regardless of prior requests** — No polling of existing log collection request status; the button always triggers a new request.
 
-11. **Web mode: tenant authentication broken** — `Connect-Tenant.ps1` uses MSAL.NET (`.NET Framework`). On Linux `pwsh`, `Add-Type` for `.dll` files targeting `.NET Framework` fails. Tenant connect is non-functional in the web container. Workaround: pre-populate `tenant_config` row directly in the database. Resolution: Phase 3 will replace MSAL.NET scripts with `@azure/identity` + `@microsoft/microsoft-graph-client`.
+11. ~~**Web mode: tenant authentication broken**~~ — **Resolved in Phase 3.** See Resolved Issues.
 
 12. **Web mode: `IntuneWinAppUtil.exe` unavailable** — The packaging binary is Windows-only and is not included in the Docker image. The `build_package` AI agent tool will fail in the web container. Resolution: Phase 3 will spawn an Azure Container Instance (Windows, pay-per-second) on demand for packaging jobs.
 
@@ -648,6 +662,12 @@ IntuneManager\
 - **App Catalog recommendations slow to load** — Fixed: recommendations are now persisted to `app_settings` (`recommendations_cache`) after each Claude call. Subsequent loads return the cache immediately; Claude refresh runs in the background and pushes updated results via `ipc:ai:recommendations-updated`. *(2026-03-31)*
 
 - **Settings only supported a single Claude API key** — Fixed: Settings → General now supports two connection methods — Direct Anthropic API key or AWS Bedrock (SSO). Save is blocked with a clear error if neither method is configured. `aws_region` and `aws_bedrock_model_id` added to `app_settings`. `ipc:aws:sso-login` handler added to `ps-bridge.ts` to run `aws sso login`. *(2026-04-01)*
+
+---
+
+### Phase 3 Resolved Issues *(2026-04-07)*
+
+- **Web mode: tenant authentication broken** — Fixed: `Connect-Tenant.ps1` used MSAL.NET (`.NET Framework`) which cannot load on Linux `pwsh`. Replaced with server-side `@azure/msal-node` `ConfidentialClientApplication`. New endpoints: `GET /api/auth/ms-login` (OAuth2 redirect), `GET /api/auth/ms-callback` (token exchange), `POST /api/auth/ms-device-code` (device code flow). Tokens encrypted with AES-256-CBC and stored in `TenantConfig.access_token` / `TenantConfig.refresh_token`. Graph-calling PS scripts receive token via `-AccessToken` parameter; `GraphClient.psm1` uses `$script:InjectedToken` when set. **Prerequisite:** Azure AD App Registration required (`AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` GitHub Secrets). *(2026-04-07)*
 
 ---
 

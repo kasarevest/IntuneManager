@@ -9,7 +9,20 @@
 
 Set-StrictMode -Version Latest
 
-$script:GraphBase = 'https://graph.microsoft.com/beta'
+$script:GraphBase       = 'https://graph.microsoft.com/beta'
+$script:InjectedToken   = $null   # set by Set-GraphAccessToken when called from server
+
+function Set-GraphAccessToken {
+    <#
+    .SYNOPSIS
+        Injects a pre-fetched OAuth2 access token so Invoke-GraphRequest does not
+        call Get-ValidAccessToken (MSAL.NET — Windows only).
+        Called by PS scripts that receive -AccessToken from the Node.js server.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Token)
+    $script:InjectedToken = $Token
+}
 
 #region Core request helper
 
@@ -25,7 +38,7 @@ function Invoke-GraphRequest {
 
     $headers = @{ 'Accept' = 'application/json' }
     if (-not $NoAuth) {
-        $token = Get-ValidAccessToken
+        $token = if ($script:InjectedToken) { $script:InjectedToken } else { Get-ValidAccessToken }
         $headers['Authorization'] = "Bearer $token"
     }
 
@@ -221,7 +234,7 @@ function Commit-ContentFile {
     # Build JSON manually to preserve @odata.type key and avoid ConvertTo-Hashtable round-trip
     # (PS 5.1 ConvertTo-Json on nested hashtables with @odata.type keys produces malformed output)
     $uri   = "$script:GraphBase/deviceAppManagement/mobileApps/$AppId/microsoft.graph.win32LobApp/contentVersions/$VersionId/files/$FileId/commit"
-    $token = Get-ValidAccessToken
+    $token = if ($script:InjectedToken) { $script:InjectedToken } else { Get-ValidAccessToken }
 
     $bodyObj = @{ fileEncryptionInfo = $FileEncryptionInfo }
     $bodyJson = $bodyObj | ConvertTo-Json -Depth 10 -Compress
@@ -282,7 +295,8 @@ function Get-Win32AppById {
 
 #endregion
 
-Export-ModuleMember -Function Invoke-GraphRequest, Get-IntuneWin32Apps, Get-AppAssignments,
+Export-ModuleMember -Function Set-GraphAccessToken, Invoke-GraphRequest,
+                               Get-IntuneWin32Apps, Get-AppAssignments,
                                New-Win32App, Update-Win32App, New-ContentVersion,
                                New-ContentFile, Get-ContentFileState, Commit-ContentFile,
                                Set-CommittedContent, Get-Win32AppById

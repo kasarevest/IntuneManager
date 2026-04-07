@@ -1,5 +1,5 @@
 ﻿#Requires -Version 5.1
-param([string]$AppId, [string]$IntunewinPath)
+param([string]$AppId, [string]$IntunewinPath, [string]$AccessToken = '')
 
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -16,6 +16,7 @@ try {
     Import-Module (Join-Path $LibPath 'Auth.psm1') -Force
     Import-Module (Join-Path $LibPath 'GraphClient.psm1') -Force
     Import-Module (Join-Path $LibPath 'UploadManager.psm1') -Force
+    if ($AccessToken) { Set-GraphAccessToken -Token $AccessToken }
 
     if (-not (Test-Path $IntunewinPath)) {
         throw ".intunewin file not found: $IntunewinPath"

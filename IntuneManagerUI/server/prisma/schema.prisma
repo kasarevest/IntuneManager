@@ -40,6 +40,8 @@ model TenantConfig {
   token_expiry        String?
   connected_at        String?
   updated_at          DateTime @default(now())
+  access_token        String?  @db.NVarChar(Max)
+  refresh_token       String?  @db.NVarChar(Max)
 
   @@map("tenant_config")
 }
