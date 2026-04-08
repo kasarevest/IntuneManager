@@ -76,7 +76,7 @@ foreach ($key in $REQUIRED_KEYS) {
     } elseif ($entry.PSObject.Properties['secretRef'] -and $entry.secretRef) {
         $ref = $entry.secretRef
         if (-not $resolvedSecrets.ContainsKey($ref)) {
-            throw "secretRef '$ref' for env var '$key' was not returned by listSecrets. The secret may already be a KV reference — re-run after verifying the Container App state."
+            throw "secretRef '$ref' for env var '$key' was not returned by listSecrets. The secret may already be a KV reference - re-run after verifying the Container App state."
         }
         $values[$key] = $resolvedSecrets[$ref]
         Log "  $key = (resolved from secretRef '$ref')"
