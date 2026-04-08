@@ -389,6 +389,34 @@ Wire 4 new WinTuner server endpoints to the React UI:
 
 ---
 
+# Task: Phase 5 — Azure File Storage for Source/Output Files
+
+## Objective
+Create persistent Azure File Shares for source and output files, mount them into
+the Container App, and point the app settings at the mount paths.
+
+## Checklist
+- [x] `scripts/setup-storage-mounts.ps1` — one-time idempotent setup script:
+  - Finds or creates storage account in `rg-intunemanager-prod`
+  - Creates file shares `source-files` and `output-files` (100 GiB each)
+  - Registers shares with Container Apps environment (`source-storage`, `output-storage`)
+  - Patches Container App to add volume mounts at `/mnt/source` and `/mnt/output` via REST API
+- [ ] **Run the script** — `.\scripts\setup-storage-mounts.ps1` (requires `az login`)
+- [ ] **Update app settings** — set `source_root_path = /mnt/source` and `output_folder_path = /mnt/output` in Settings page (or directly in the DB)
+- [ ] **Verify** — Container App revision shows new volumes; file writes from packaging jobs land in storage account
+
+## Side-Effect Audit
+1. Existing packaging jobs that write to `/tmp` will continue to work until app settings are updated — safe; non-destructive
+2. Volume mount patch creates a new Container App revision — app restarts once; JWT sessions survive (DB-backed)
+3. Storage account key stored in Container Apps environment — needed for SMB mount; same model as KV secrets
+
+## Post-Flight
+_Pending run of setup script._
+
+---
+
+---
+
 # Archived: Task — PowerShell + WPF Desktop Application (COMPLETE)
 
 > See git history for original todo.md content. All checklist items completed, peer review PASS, post-flight written.
