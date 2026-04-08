@@ -47,6 +47,15 @@ try {
     }
 
     if (-not $resolvedTool) {
+        # PS7 fallback: use cross-platform Create-IntuneWin.ps1 when running on Linux/pwsh 7
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $createScript = Join-Path $PSScriptRoot 'Create-IntuneWin.ps1'
+            if (Test-Path $createScript) {
+                Write-Log "IntuneWinAppUtil.exe not found — using native PS7 packager"
+                & $createScript -SourceFolder $SourceFolder -EntryPoint $EntryPoint -OutputFolder $OutputFolder
+                return
+            }
+        }
         $tried = ($candidates | Select-Object -Unique) -join "`n  "
         throw "IntuneWinAppUtil.exe not found. Searched:`n  $tried`n`nPlease set the correct path in Settings → General → Paths."
     }
