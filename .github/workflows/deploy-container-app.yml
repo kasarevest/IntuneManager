@@ -83,6 +83,18 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Configure GHCR registry credentials on Container App
+        run: |
+          # Refresh GHCR pull credentials before each deploy so Container Apps
+          # can authenticate to pull the new image (including digest-based refs).
+          # GITHUB_TOKEN has packages:read for this repo's packages.
+          az containerapp registry set \
+            --name ${{ env.CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --server ghcr.io \
+            --username "${{ github.actor }}" \
+            --password "${{ secrets.GITHUB_TOKEN }}"
+
       - name: Deploy to Azure Container Apps
         run: |
           # Use the exact image digest so Container Apps always pulls the new image.
