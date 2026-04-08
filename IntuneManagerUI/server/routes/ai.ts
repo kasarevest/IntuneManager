@@ -22,10 +22,12 @@ interface ClientBundle {
 }
 
 async function createClient(): Promise<ClientBundle> {
-  // Direct API key takes priority — allows container deployments to use
-  // ANTHROPIC_API_KEY env var even when Bedrock settings exist in the DB.
+  // Resolve API key: DB-stored encrypted key → ANTHROPIC_API_KEY env var → Bedrock.
+  // If the DB row exists but decrypt returns '' (bad ciphertext / wrong APP_SECRET_KEY),
+  // we still fall through to the env var rather than passing garbage to Anthropic.
   const apiKeyRow = await prisma.appSetting.findUnique({ where: { key: 'claude_api_key_encrypted' } })
-  const apiKey = apiKeyRow ? decrypt(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
+  const dbKey = apiKeyRow ? decrypt(apiKeyRow.value) : ''
+  const apiKey = dbKey || process.env.ANTHROPIC_API_KEY || ''
 
   if (apiKey) {
     return { client: new Anthropic({ apiKey }), model: 'claude-sonnet-4-6' }
@@ -52,9 +54,10 @@ async function assertClientConfigured(): Promise<ClientBundle> {
     return row?.value ?? ''
   }
 
-  // Check direct API key first
+  // Check direct API key first (same fallback logic as createClient)
   const apiKeyRow = await prisma.appSetting.findUnique({ where: { key: 'claude_api_key_encrypted' } })
-  const apiKey = apiKeyRow ? decrypt(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
+  const dbKey = apiKeyRow ? decrypt(apiKeyRow.value) : ''
+  const apiKey = dbKey || process.env.ANTHROPIC_API_KEY || ''
 
   if (apiKey) return createClient()
 
@@ -1113,8 +1116,11 @@ Respond ONLY with a JSON array. No markdown, no explanation.`,
         sseManager.broadcast('recommendations-updated', { recommendations: fresh })
       }
     } catch (refreshErr) {
-      console.error('[AI] Background recommendation refresh failed:', (refreshErr as Error).message)
-      sseManager.broadcast('recommendations-updated', { recommendations: null, error: (refreshErr as Error).message })
+      const refreshMsg = (refreshErr as Error).message ?? ''
+      const isAuthErr = refreshMsg.includes('authentication_error') || refreshMsg.includes('invalid x-api-key') || refreshMsg.includes('401')
+      const displayMsg = isAuthErr ? 'Invalid API key. Go to Settings → General and re-enter your Anthropic API key.' : refreshMsg
+      console.error('[AI] Background recommendation refresh failed:', refreshMsg)
+      sseManager.broadcast('recommendations-updated', { recommendations: null, error: displayMsg })
     }
   }
 
@@ -1140,7 +1146,16 @@ Respond ONLY with a JSON array. No markdown, no explanation.`,
     }
     res.json({ success: true, recommendations, fromCache: false })
   } catch (err) {
-    res.json({ success: false, error: (err as Error).message, recommendations: [], fromCache: false })
+    const msg = (err as Error).message ?? ''
+    const isAuthErr = msg.includes('authentication_error') || msg.includes('invalid x-api-key') || msg.includes('401')
+    res.json({
+      success: false,
+      error: isAuthErr
+        ? 'Invalid API key. Go to Settings → General and re-enter your Anthropic API key.'
+        : msg,
+      recommendations: [],
+      fromCache: false
+    })
   }
 })
 
