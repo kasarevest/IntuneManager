@@ -18,6 +18,8 @@ import prisma from '../db'
 const AUTHORITY = 'https://login.microsoftonline.com/organizations/oauth2/v2.0'
 
 const SCOPES = [
+  'openid',
+  'profile',
   'DeviceManagementApps.ReadWrite.All',
   'DeviceManagementConfiguration.Read.All',
   'User.Read',

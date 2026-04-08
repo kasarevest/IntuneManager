@@ -16,7 +16,7 @@ const sendToRenderer = (channel: string, data: unknown) => sseManager.broadcast(
 router.get('/api/ps/tenant-config', requireAuth as import('express').RequestHandler, async (req, res) => {
   try {
     const row = await prisma.tenantConfig.findUnique({ where: { id: 1 } })
-    if (!row || !row.username) { res.json({ isConnected: false }); return }
+    if (!row || !row.access_token) { res.json({ isConnected: false }); return }
     const expiry = row.token_expiry ? new Date(row.token_expiry) : null
     const expiresInMinutes = expiry ? Math.round((expiry.getTime() - Date.now()) / 60000) : undefined
     res.json({ isConnected: true, username: row.username, tenantId: row.tenant_id, expiresInMinutes })
