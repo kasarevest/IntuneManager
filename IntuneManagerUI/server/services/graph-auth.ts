@@ -169,7 +169,7 @@ export function startDeviceCodeFlow(): Promise<DeviceCodeInfo> {
 
     const tokenPromise = pca.acquireTokenByDeviceCode({
       scopes: SCOPES,
-      deviceCodeCallback: (response: msal.DeviceCodeResponse) => {
+      deviceCodeCallback: (response) => {
         if (!resolved) {
           resolved = true
           resolve({
