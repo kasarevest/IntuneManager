@@ -204,7 +204,7 @@ Step 1 — Cleanup (delete uksouth resources)
 | Item | Trade-off | Resolution path |
 |---|---|---|
 | ~~`Connect-Tenant.ps1` uses MSAL.NET (.NET Framework) — fails on Linux pwsh~~ | ~~Phase 2 accepts broken tenant connect~~ | **RESOLVED Phase 3:** replaced with direct HTTP OAuth2 (`fetch()` to MS token endpoint; `@azure/msal-node` removed — caused `AADSTS7000218` via automatic PKCE injection on stateless confidential clients); PS scripts receive token via `-AccessToken` param |
-| `IntuneWinAppUtil.exe` Windows-only — not in Linux container | AI agent `build_package` tool will fail | Phase 4: Azure Container Instance (Windows, pay-per-second) triggered on demand |
+| `IntuneWinAppUtil.exe` Windows-only — not in Linux container | AI agent `build_package` tool will fail | Phase 4c: replaced with native PS7/.NET 8.0 `Create-IntuneWin.ps1` — cross-platform, no new Azure resources |
 | In-memory `SSEManager` — single instance only | Fine for initial deployment; breaks if scaled to >1 replica | Phase 5: Azure Service Bus topic for fan-out |
 | `prisma db push` instead of `prisma migrate deploy` | No migrations folder yet; data-loss flag accepted | Generate migrations locally (`prisma migrate dev --name init`), commit, switch CI step |
 
@@ -262,30 +262,25 @@ Step 1 — Cleanup (delete uksouth resources)
 Three workstreams to harden the Azure deployment:
 1. **4a — Prisma Migrations:** Replace `prisma db push` with `prisma migrate deploy` — fully automated in CI.
 2. **4b — Key Vault Secret References:** Move all runtime secrets from plaintext GitHub Actions `--set-env-vars` into Azure Key Vault references accessed via Managed Identity.
-3. **4c — ACI-Based Packaging:** Replace Windows-only `IntuneWinAppUtil.exe` with an on-demand Azure Container Instance (Windows) + Azure Container Registry image, communicating via Azure Blob Storage.
+3. **4c — Native PS7 .intunewin Creation:** Replace Windows-only `IntuneWinAppUtil.exe` with a pure PowerShell 7 / .NET 8.0 script that implements the `.intunewin` format natively — no Windows APIs, no new Azure resources.
 
 ### Decisions (locked)
 | Question | Decision |
 |---|---|
-| ACI container registry | **Azure Container Registry (ACR)** in East US — MI-based pull, no stored credentials |
-| SQL endpoint / ACI networking | SQL has public endpoint (CI reaches it); ACI needs Blob Storage only — no VNet injection |
-| Managed Identity for ACI | **Reuse existing Container App MI** — grant `Storage Blob Data Contributor` + `Contributor` on ACI resource group |
+| Packaging approach | **Native PS7/.NET 8.0 script** — implements `.intunewin` format in pure cross-platform code; no ACI, no ACR, no Blob transfer |
 | Prisma migrations | **Automated in CI** — bootstrap script generates baseline + marks applied on first run; `migrate deploy` every run thereafter |
 | APP_SECRET_KEY | In GitHub Secrets → move to Key Vault; **preserve exact value** to avoid invalidating AES-encrypted tokens in DB |
 | ANTHROPIC_API_KEY | Users configure their own via Settings — skip from Key Vault |
-| Blob container for ACI | Create `aci-jobs` in `stintunemgrprod` if it doesn't exist |
 
 ### Dependency Graph
 ```
 4a (Prisma Migrations) ── no dependencies; lowest risk; do first
-4b (Key Vault)         ── no dependency on 4a; can run in parallel; must complete before 4c ships new ACI secrets
-4c-i (ACR + ACI image) ── no dependency on 4a/4b; build in parallel with 4b
-4c-ii (ACI service)    ── depends on 4b (KV ready for new env vars) + 4c-i (image exists)
-4c-iii (Platform guard)── depends on 4c-ii
+4b (Key Vault)         ── no dependency on 4a; can run in parallel
+4c (PS7 packaging)     ── no Azure dependencies; fully independent; do in parallel with 4a/4b
 
 Execution order: 4a ─┐
-                 4b ─┤─→ 4c-ii → 4c-iii
-               4c-i ─┘
+                 4b ─┤─→ all done
+                 4c ─┘
 ```
 
 ### Context Pruning (irrelevant to Phase 4)
@@ -302,9 +297,9 @@ Execution order: 4a ─┐
 | KV RBAC propagation delay → `ForbiddenByRbac` | Medium | High | Wait 30s after `az role assignment create` before first use (Lesson 011) |
 | APP_SECRET_KEY stored with wrong value → all DB tokens invalid | High | Critical | Read exact value from GitHub Secrets before storing in KV; verify by checking tenant stays Connected after deploy |
 | Workflow `--set-env-vars` re-sets KV-ref vars to plaintext on next deploy | High | High | Remove `--set-env-vars` block from workflow as part of 4b — do not leave it in |
-| ACI Windows image pull slow on first run | Certain | Low | Acceptable; log progress via SSE; 15-min timeout is sufficient |
-| ACI orphaned if CA crashes during poll | Low | Low | Orphan-cleanup at CA startup: delete `aci-intunepackager-*` older than 30 min |
-| ACR image pull from ACI fails | Medium | High | Grant MI `AcrPull` on ACR; ACI uses user-assigned MI — no credentials needed |
+| PS7 `.intunewin` output rejected by Intune (format mismatch) | Low | High | Format is decoded by our own `UploadManager.psm1` — we understand every field; validate against a known-good file from `IntuneWinAppUtil.exe` before shipping |
+| AES padding or HMAC scheme differs from what Graph API expects | Low | High | Use `PKCS7` padding and `HMACSHA256` over the encrypted bytes — matches IntuneWinAppUtil source and what `UploadManager.psm1` reads back |
+| PS5.1 desktop mode broken by new script | None | High | `Build-Package.ps1` keeps IntuneWinAppUtil.exe as primary path; PS7 fallback is only triggered when the tool is not found |
 | SQL public endpoint — security audit flag | Medium | Medium | Already enforced: `encrypt=true`, `trustServerCertificate=false`; enable Azure Defender for SQL; firewall "Allow Azure Services only" |
 
 ---
@@ -352,54 +347,38 @@ Execution order: 4a ─┐
 
 ---
 
-#### Phase 4c-i — ACR + ACI Windows Image
+#### Phase 4c — Native PS7 .intunewin Creation
 
-- [ ] Provision ACR in East US:
-  `az acr create --name acrintunemanagerprod --resource-group rg-intunemanager-prod --sku Basic --location eastus`
-- [ ] Get MI principal ID: `az containerapp identity show -n ca-intunemanager-prod -g rg-intunemanager-prod`
-- [ ] Grant MI `AcrPull` on ACR: `az role assignment create --assignee <MI_PRINCIPAL_ID> --role AcrPull --scope <ACR_ID>`
-- [ ] Create `aci-packager-image/Dockerfile` — FROM `mcr.microsoft.com/windows/servercore:ltsc2022`; installs `Az.Storage` PS module; copies `IntuneWinAppUtil.exe` + `Run-PackageJob.ps1`
-- [ ] Create `aci-packager-image/Run-PackageJob.ps1` — entrypoint: reads `ACI_JOB_ID` / `STORAGE_ACCOUNT_NAME` / `STORAGE_CONTAINER_NAME` from env; connects via `Connect-AzAccount -Identity` (MI); downloads source blobs; runs `IntuneWinAppUtil.exe`; uploads `.intunewin`; writes `status.json`
-- [ ] Create `.github/workflows/build-aci-image.yml` — `windows-2022` runner; `az acr login`; `docker build & push` to `acrintunemanagerprod.azurecr.io/aci-packager:latest`; triggers on `push: paths: ['aci-packager-image/**']` + `workflow_dispatch`
-- [ ] Build and push the ACI image (manual `workflow_dispatch` trigger or push to `aci-packager-image/`)
-- [ ] Create `aci-jobs` blob container: `az storage container create --name aci-jobs --account-name stintunemgrprod --auth-mode login`
-- [ ] Grant MI `Storage Blob Data Contributor` on `stintunemgrprod`: `az role assignment create --assignee <MI_PRINCIPAL_ID> --role "Storage Blob Data Contributor" --scope <STORAGE_ACCOUNT_ID>`
-- [ ] Store ACI image reference in KV: `az keyvault secret set --vault-name kv-intunemgr-prod --name ACI-PACKAGER-IMAGE --value "acrintunemanagerprod.azurecr.io/aci-packager:latest"`
-- [ ] Add to Container App env: `ACI_PACKAGER_IMAGE=secretref:aci-packager-image`
+**Approach:** Implement the `.intunewin` packaging format in pure PowerShell 7 / .NET 8.0. The format is:
+1. ZIP the source folder → inner ZIP bytes
+2. AES-256-CBC encrypt the inner ZIP (random 256-bit key + 128-bit IV, PKCS7 padding)
+3. HMAC-SHA256 of the encrypted bytes (separate 256-bit MAC key)
+4. SHA256 of the *unencrypted* inner ZIP → `FileDigest`
+5. Write `Detection.xml` with all keys + digests
+6. Outer ZIP: `IntunePackage.intunewin` (encrypted bytes) + `metadata/Detection.xml`
 
-**Files changed (new):** `aci-packager-image/Dockerfile` · `aci-packager-image/Run-PackageJob.ps1` · `.github/workflows/build-aci-image.yml`
+All operations use `System.Security.Cryptography` + `System.IO.Compression` — 100% cross-platform in .NET 8.0. No Windows-only APIs. `UploadManager.psm1` already validates this format on the decode side.
 
----
-
-#### Phase 4c-ii — Server-Side ACI Service
-
-- [ ] Add to `IntuneManagerUI/server/package.json`: `@azure/arm-containerinstance` ^10, `@azure/storage-blob` ^12, `@azure/identity` ^4
-- [ ] Create `IntuneManagerUI/server/services/aci-packager.ts`:
-  - `buildPackageViaAci(sourceFolder, entryPoint, outputFolder, jobId, onLog)` → `Promise<{ success, intunewinPath?, error? }>`
-  - Step 1: Upload source files to `aci-jobs/<jobId>/source/` via `BlobServiceClient` + `DefaultAzureCredential`
-  - Step 2: Write `aci-jobs/<jobId>/input.json` with `{ entryPoint }`
-  - Step 3: Create ACI via `ContainerInstanceManagementClient` — Windows OS, 2 vCPU / 4 GB, restart=Never, MI identity, env vars: `ACI_JOB_ID`, `STORAGE_ACCOUNT_NAME`, `STORAGE_CONTAINER_NAME`; ACR image via `acrintunemanagerprod.azurecr.io`
-  - Step 4: Poll `aci-jobs/<jobId>/status.json` every 10s, timeout 15 min
-  - Step 5: On success, download `.intunewin` from `aci-jobs/<jobId>/output/` to `outputFolder`
-  - Finally: delete ACI + delete `aci-jobs/<jobId>/` blob prefix (cleanup always runs)
-- [ ] Add orphan-cleanup to `IntuneManagerUI/server/index.ts` — runs after `initializeAuth`; lists `aci-intunepackager-*` Container Groups; deletes any > 30 min old
-- [ ] Add required env vars to `IntuneManagerUI/server/.env.example`:
-  `ACI_RESOURCE_GROUP`, `ACI_SUBSCRIPTION_ID`, `ACI_MI_RESOURCE_ID`, `ACI_PACKAGER_IMAGE`, `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_CONTAINER_NAME`
-
-**Files changed:** `server/services/aci-packager.ts` (new) · `server/package.json` · `server/index.ts` · `server/.env.example`
-
----
-
-#### Phase 4c-iii — Platform Guard in ai.ts
-
-- [ ] In `IntuneManagerUI/server/routes/ai.ts`, update `case 'build_package':` (line 386):
-  - If `process.platform !== 'win32'`: call `buildPackageViaAci(...)` instead of `runPsScript('Build-Package.ps1', ...)`
-  - Else: existing PS bridge path unchanged
-- [ ] Peer-review the full ACI implementation before shipping
+- [ ] Create `IntuneManagerUI/electron/ps-scripts/Create-IntuneWin.ps1`:
+  - `#Requires -Version 7.0`
+  - `param([string]$SourceFolder, [string]$EntryPoint, [string]$OutputFolder)`
+  - Step 1: `[System.IO.Compression.ZipFile]::CreateFromDirectory($SourceFolder, $tempZip)`
+  - Step 2: `[System.Security.Cryptography.SHA256]::Create().ComputeHash($innerBytes)` → `$fileDigest`
+  - Step 3: `[System.Security.Cryptography.Aes]::Create()` with `KeySize=256`, `Mode=CBC`, `Padding=PKCS7`; `GenerateKey()`; `GenerateIV()`; `CreateEncryptor().TransformFinalBlock()`
+  - Step 4: `[System.Security.Cryptography.RandomNumberGenerator]::Fill($macKeyBytes)`; `[System.Security.Cryptography.HMACSHA256]::new($macKeyBytes).ComputeHash($encryptedBytes)` → `$mac`
+  - Step 5: Build `Detection.xml` string with all 7 required fields (`EncryptionKey`, `MacKey`, `InitializationVector`, `Mac`, `FileDigest`, `FileDigestAlgorithm="SHA256"`, `ProfileIdentifier="ProfileVersion1"`) + `UnencryptedContentSize`
+  - Step 6: Create outer ZIP via `[System.IO.Compression.ZipArchive]`; add entry `IntunePackage.intunewin` (NoCompression) with encrypted bytes; add entry `metadata/Detection.xml` with XML bytes
+  - Output: `$OutputFolder/<SourceFolderName>.intunewin`; `Write-Output "RESULT:..."` with `{ success, intunewinPath, sizeMB }`
+- [ ] Update `IntuneManagerUI/electron/ps-scripts/Build-Package.ps1`:
+  - After the "tool not found" check, add PS7 fallback **before** throwing: if `$PSVersionTable.PSVersion.Major -ge 7`, call `Create-IntuneWin.ps1` directly and exit
+  - Windows desktop with IntuneWinAppUtil.exe: unchanged behaviour
+  - Linux container (pwsh 7, no .exe): uses new script
+- [ ] Peer-review `Create-IntuneWin.ps1` before shipping
 - [ ] Push to master → CI/CD deploys
-- [ ] Test: trigger a packaging job from the web UI; verify ACI appears in Azure Portal, `.intunewin` produced, ACI terminates, deploy prompt appears in UI
+- [ ] Test: trigger a packaging job from the web UI; verify `.intunewin` produced and upload completes
 
-**Files changed:** `server/routes/ai.ts`
+**Files changed:** `electron/ps-scripts/Create-IntuneWin.ps1` (new) · `electron/ps-scripts/Build-Package.ps1`
+**No new Azure resources. No new npm dependencies. No changes to `ai.ts`, `ps-bridge.ts`, or the Dockerfile.**
 
 ---
 
@@ -407,8 +386,7 @@ Execution order: 4a ─┐
 - [ ] **4a:** `prisma migrate deploy` runs green in CI; "No pending migrations" after first baseline run; no data loss
 - [ ] **4b:** Container App env vars sourced from KV; no plaintext secrets in workflow; tenant Connected after deploy; login works
 - [ ] **4b:** GitHub Secrets `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` deleted
-- [ ] **4c:** Packaging job from web UI → ACI spins up → `.intunewin` produced → ACI terminates → deploy prompt shown
-- [ ] **4c:** Container App MI has correct RBAC on ACR (`AcrPull`) + Blob Storage (`Storage Blob Data Contributor`) + resource group (`Contributor`)
+- [ ] **4c:** Packaging job from web UI → `Create-IntuneWin.ps1` runs on Linux via pwsh → `.intunewin` produced → upload completes → app appears in Intune
 
 ---
 
