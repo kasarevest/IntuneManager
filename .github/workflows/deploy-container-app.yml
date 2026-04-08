@@ -45,6 +45,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: ./IntuneManagerUI
@@ -84,10 +85,12 @@ jobs:
 
       - name: Deploy to Azure Container Apps
         run: |
+          # Use the exact image digest so Container Apps always pulls the new image.
+          # Using :latest risks a stale cache hit where the tag name hasn't changed.
           az containerapp update \
             --name ${{ env.CONTAINER_APP_NAME }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}" \
             --set-env-vars \
               "AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" \
               "AZURE_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}" \
