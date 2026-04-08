@@ -56,10 +56,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ── Apply database schema ────────────────────────────────────────────────
-      # Using prisma db push for Phase 2 (no migrations folder yet).
-      # TODO Phase 3: run `npx prisma migrate dev --name init` locally, commit
-      # prisma/migrations/, then switch this step to `prisma migrate deploy`.
+      # ── Apply database migrations ─────────────────────────────────────────────
+      # Phase 4a: proper Prisma migration flow.
+      # migrate-bootstrap.mjs handles the one-time baseline registration for
+      # databases that were originally created via `prisma db push` (no
+      # _prisma_migrations table). On subsequent runs it exits immediately and
+      # `prisma migrate deploy` applies only new migrations.
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -68,11 +70,14 @@ jobs:
         working-directory: IntuneManagerUI/server
         run: npm install
 
-      - name: Apply database schema
+      - name: Apply database migrations
         working-directory: IntuneManagerUI/server
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: npx prisma db push --skip-generate --accept-data-loss
+        run: |
+          npx prisma generate
+          node scripts/migrate-bootstrap.mjs
+          npx prisma migrate deploy
 
       # ── Deploy to Azure Container Apps ───────────────────────────────────────
       # Using az CLI directly instead of azure/container-apps-deploy-action
