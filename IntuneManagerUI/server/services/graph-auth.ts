@@ -28,6 +28,7 @@ const SCOPES = [
 
 const CCA_CACHE_KEY = 'msal_cache_cca'
 const PCA_CACHE_KEY = 'msal_cache_pca'
+const PKCE_VERIFIER_KEY = 'msal_pkce_verifier'
 
 export interface DeviceCodeInfo {
   userCode: string
@@ -136,25 +137,50 @@ async function saveMetadata(result: msal.AuthenticationResult): Promise<void> {
 
 /**
  * Generate the Microsoft OAuth2 authorization URL.
- * Uses ConfidentialClientApplication so the token exchange includes the client_secret.
- * Frontend should redirect the browser to this URL.
+ * Uses CCA (sends client_secret in token request) + explicit PKCE (msal-node v2.x generates
+ * PKCE automatically even for CCA, so we generate it ourselves and store the verifier in DB
+ * to have it available in handleCallback, which runs in a separate CCA instance).
  */
-export function getAuthUrl(state: string): Promise<string> {
+export async function getAuthUrl(state: string): Promise<string> {
   const redirectUri = process.env.AZURE_REDIRECT_URI
   if (!redirectUri) throw new GraphAuthError('AZURE_REDIRECT_URI environment variable is required')
-  return getCCA().getAuthCodeUrl({ scopes: SCOPES, redirectUri, state })
+
+  const { verifier, challenge } = await new msal.CryptoProvider().generatePkceCodes()
+
+  await prisma.appSetting.upsert({
+    where: { key: PKCE_VERIFIER_KEY },
+    update: { value: encrypt(verifier), updated_at: new Date() },
+    create: { key: PKCE_VERIFIER_KEY, value: encrypt(verifier) },
+  })
+
+  return getCCA().getAuthCodeUrl({
+    scopes: SCOPES,
+    redirectUri,
+    state,
+    codeChallenge: challenge,
+    codeChallengeMethod: 'S256',
+  })
 }
 
 /**
  * Exchange the authorization code (from the OAuth callback) for tokens.
- * Uses CCA — sends client_secret to satisfy Azure AD's confidential client requirement.
+ * CCA sends client_secret automatically; codeVerifier satisfies the PKCE challenge
+ * that msal-node included in the authorization URL.
  */
 export async function handleCallback(code: string): Promise<void> {
   const redirectUri = process.env.AZURE_REDIRECT_URI
   if (!redirectUri) throw new GraphAuthError('AZURE_REDIRECT_URI environment variable is required')
-  const result = await getCCA().acquireTokenByCode({ code, scopes: SCOPES, redirectUri })
+
+  const verifierRow = await prisma.appSetting.findUnique({ where: { key: PKCE_VERIFIER_KEY } })
+  if (!verifierRow?.value) throw new GraphAuthError('PKCE verifier not found — restart the sign-in flow')
+  const codeVerifier = decrypt(verifierRow.value)
+  if (!codeVerifier) throw new GraphAuthError('PKCE verifier decryption failed — restart the sign-in flow')
+
+  const result = await getCCA().acquireTokenByCode({ code, scopes: SCOPES, redirectUri, codeVerifier })
   if (!result) throw new GraphAuthError('acquireTokenByCode returned null')
   await saveMetadata(result)
+
+  await prisma.appSetting.delete({ where: { key: PKCE_VERIFIER_KEY } }).catch(() => {})
 }
 
 /**
