@@ -54,6 +54,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends powershell \
     && rm -rf /var/lib/apt/lists/* /tmp/ms-prod.deb
 
+# Install WinTuner PS module (Get-WtWin32Apps, New-WtWingetPackage, Deploy-WtWin32App, etc.)
+RUN pwsh -NonInteractive -Command \
+    "Set-PSRepository PSGallery -InstallationPolicy Trusted; \
+     Install-Module -Name WinTuner -Scope AllUsers -Force -AllowClobber"
+
 # Copy compiled server — preserve structure so __dirname path resolution works:
 # node server/dist/index.js → __dirname = /app/server/dist
 # path.join(__dirname, '..', '..', 'builds', 'dist-web') = /app/builds/dist-web ✓

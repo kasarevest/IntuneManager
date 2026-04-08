@@ -385,6 +385,78 @@ router.get('/api/ps/autopilot-events', requireAuth as import('express').RequestH
   res.json(data)
 })
 
+// ── WinTuner routes ───────────────────────────────────────────────────────────
+
+// GET /api/ps/wt-updates — list Win32 apps that have a newer WinGet version available
+router.get('/api/ps/wt-updates', requireAuth as import('express').RequestHandler, async (req, res) => {
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, updates: [], error: e.message }); return }
+    throw e
+  }
+  const result = await runPsScript('Get-WtUpdates.ps1', ['-AccessToken', accessToken])
+  res.json(result.result ?? { success: false, updates: [], error: 'No result from PS script' })
+})
+
+// POST /api/ps/wt-package — download a WinGet package via WinTuner (New-WtWingetPackage)
+router.post('/api/ps/wt-package', requireAuth as import('express').RequestHandler, async (req, res) => {
+  const { packageId, packageFolder, version, jobId } = req.body as {
+    packageId: string; packageFolder: string; version?: string; jobId?: string
+  }
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
+  const args = ['-PackageId', packageId, '-PackageFolder', packageFolder, '-AccessToken', accessToken]
+  if (version) args.push('-Version', version)
+
+  const result = await runPsScript('New-WtPackage.ps1', args, (msg, level) => {
+    if (jobId) sendToRenderer('job:log', { jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
+  })
+  res.json(result.result ?? { success: false, error: 'Package creation failed' })
+})
+
+// POST /api/ps/wt-deploy — deploy an app folder to Intune via WinTuner (Deploy-WtWin32App)
+router.post('/api/ps/wt-deploy', requireAuth as import('express').RequestHandler, async (req, res) => {
+  const { packageFolder, assignment, graphId, keepAssignments, jobId } = req.body as {
+    packageFolder: string; assignment?: string; graphId?: string; keepAssignments?: boolean; jobId?: string
+  }
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
+  const args = ['-PackageFolder', packageFolder, '-AccessToken', accessToken]
+  if (assignment) args.push('-Assignment', assignment)
+  if (graphId) args.push('-GraphId', graphId)
+  if (keepAssignments) args.push('-KeepAssignments')
+
+  const result = await runPsScript('Deploy-WtApp.ps1', args, (msg, level) => {
+    if (jobId) sendToRenderer('job:log', { jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
+  })
+  res.json(result.result ?? { success: false, error: 'Deployment failed' })
+})
+
+// POST /api/ps/wt-update-app — update an existing Intune app to its latest WinGet version
+router.post('/api/ps/wt-update-app', requireAuth as import('express').RequestHandler, async (req, res) => {
+  const { packageId, graphId, packageFolder, version, jobId } = req.body as {
+    packageId: string; graphId: string; packageFolder: string; version?: string; jobId?: string
+  }
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
+  const args = ['-PackageId', packageId, '-GraphId', graphId, '-PackageFolder', packageFolder, '-AccessToken', accessToken]
+  if (version) args.push('-Version', version)
+
+  const result = await runPsScript('Update-WtApp.ps1', args, (msg, level) => {
+    if (jobId) sendToRenderer('job:log', { jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
+  })
+  res.json(result.result ?? { success: false, error: 'Update failed' })
+})
+
 // POST /api/aws/sso-login
 router.post('/api/aws/sso-login', requireAuth as import('express').RequestHandler, async (req, res) => {
   const { profile } = req.body as { profile?: string }
