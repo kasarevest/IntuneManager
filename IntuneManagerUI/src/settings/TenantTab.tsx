@@ -10,6 +10,15 @@ export default function TenantTab() {
 
   useEffect(() => {
     refreshStatus()
+    // Surface any auth_error that Microsoft or the callback route returned via query param
+    const params = new URLSearchParams(window.location.search)
+    const authError = params.get('auth_error')
+    if (authError) {
+      setError(`Sign-in failed: ${decodeURIComponent(authError)}`)
+      // Remove the query param without reloading the page
+      const clean = window.location.pathname + window.location.hash
+      window.history.replaceState(null, '', clean)
+    }
   }, [refreshStatus])
 
   // Poll every 5s while waiting for device code completion

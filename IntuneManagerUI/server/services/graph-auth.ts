@@ -4,16 +4,15 @@
  * Replaces the MSAL.NET PS-script approach that fails on Linux.
  *
  * Three flows supported:
- *   1. Authorization Code + PKCE  — browser redirects (getAuthUrl / handleCallback)
- *   2. Device Code Flow           — for restricted/headless environments (startDeviceCodeFlow)
- *   3. Silent refresh             — getAccessToken() auto-refreshes via MSAL token cache
+ *   1. Authorization Code Flow   — browser redirects via ConfidentialClientApplication
+ *                                  (sends client_secret; required when app has a secret in Azure AD)
+ *   2. Device Code Flow          — PublicClientApplication (no secret needed for device flow)
+ *   3. Silent refresh            — acquireTokenSilent via MSAL token cache
  *
- * Token persistence strategy:
- *   - MSAL's full token cache (including refresh tokens) is serialized, AES-256-CBC encrypted,
- *     and stored in the `app_settings` table under key 'msal_token_cache'.
- *     The cachePlugin wires this up transparently — we never access raw refresh tokens.
- *   - TenantConfig stores the latest access token + display metadata (username, expiry)
- *     so PS scripts can receive an injected token and the UI can show the connected user.
+ * Token persistence:
+ *   - CCA token cache → app_settings key 'msal_cache_cca' (auth code path)
+ *   - PCA token cache → app_settings key 'msal_cache_pca' (device code path)
+ *   - TenantConfig stores latest access_token + display metadata for PS script injection and UI
  */
 
 import * as msal from '@azure/msal-node'
@@ -27,8 +26,8 @@ const SCOPES = [
   'offline_access',
 ]
 
-const TOKEN_CACHE_KEY = 'msal_token_cache'
-const PKCE_VERIFIER_KEY = 'msal_pkce_verifier'
+const CCA_CACHE_KEY = 'msal_cache_cca'
+const PCA_CACHE_KEY = 'msal_cache_pca'
 
 export interface DeviceCodeInfo {
   userCode: string
@@ -43,28 +42,55 @@ export class GraphAuthError extends Error {
   }
 }
 
-// Persists MSAL's internal token cache to the DB.
-// MSAL calls beforeCacheAccess to load and afterCacheAccess to save on every token operation.
-const cachePlugin: msal.ICachePlugin = {
-  async beforeCacheAccess(cacheContext: msal.TokenCacheContext): Promise<void> {
-    const row = await prisma.appSetting.findUnique({ where: { key: TOKEN_CACHE_KEY } })
-    if (row?.value) {
-      const serialized = decrypt(row.value)
-      if (serialized) cacheContext.tokenCache.deserialize(serialized)
-    }
-  },
-  async afterCacheAccess(cacheContext: msal.TokenCacheContext): Promise<void> {
-    if (cacheContext.cacheHasChanged) {
-      const serialized = cacheContext.tokenCache.serialize()
-      await prisma.appSetting.upsert({
-        where: { key: TOKEN_CACHE_KEY },
-        update: { value: encrypt(serialized), updated_at: new Date() },
-        create: { key: TOKEN_CACHE_KEY, value: encrypt(serialized) },
-      })
-    }
-  },
+function makeCachePlugin(dbKey: string): msal.ICachePlugin {
+  return {
+    async beforeCacheAccess(cacheContext: msal.TokenCacheContext): Promise<void> {
+      const row = await prisma.appSetting.findUnique({ where: { key: dbKey } })
+      if (row?.value) {
+        const serialized = decrypt(row.value)
+        if (serialized) cacheContext.tokenCache.deserialize(serialized)
+      }
+    },
+    async afterCacheAccess(cacheContext: msal.TokenCacheContext): Promise<void> {
+      if (cacheContext.cacheHasChanged) {
+        const serialized = cacheContext.tokenCache.serialize()
+        await prisma.appSetting.upsert({
+          where: { key: dbKey },
+          update: { value: encrypt(serialized), updated_at: new Date() },
+          create: { key: dbKey, value: encrypt(serialized) },
+        })
+      }
+    },
+  }
 }
 
+// ConfidentialClientApplication — used for Authorization Code flow.
+// Azure AD requires the client_secret when the app registration has one defined.
+function getCCA(): msal.ConfidentialClientApplication {
+  const clientId = process.env.AZURE_CLIENT_ID
+  const clientSecret = process.env.AZURE_CLIENT_SECRET
+  if (!clientId || !clientSecret) {
+    throw new GraphAuthError('AZURE_CLIENT_ID and AZURE_CLIENT_SECRET environment variables are required')
+  }
+  return new msal.ConfidentialClientApplication({
+    auth: {
+      clientId,
+      authority: 'https://login.microsoftonline.com/organizations',
+      clientSecret,
+    },
+    cache: { cachePlugin: makeCachePlugin(CCA_CACHE_KEY) },
+    system: {
+      loggerOptions: {
+        loggerCallback: () => {},
+        piiLoggingEnabled: false,
+        logLevel: msal.LogLevel.Error,
+      },
+    },
+  })
+}
+
+// PublicClientApplication — used for Device Code flow only.
+// Device code does not use the client_secret.
 function getPCA(): msal.PublicClientApplication {
   const clientId = process.env.AZURE_CLIENT_ID
   if (!clientId) throw new GraphAuthError('AZURE_CLIENT_ID environment variable is required')
@@ -73,7 +99,7 @@ function getPCA(): msal.PublicClientApplication {
       clientId,
       authority: 'https://login.microsoftonline.com/organizations',
     },
-    cache: { cachePlugin },
+    cache: { cachePlugin: makeCachePlugin(PCA_CACHE_KEY) },
     system: {
       loggerOptions: {
         loggerCallback: () => {},
@@ -93,7 +119,7 @@ async function saveMetadata(result: msal.AuthenticationResult): Promise<void> {
       access_token: encrypt(result.accessToken),
       refresh_token: null,
       token_expiry: result.expiresOn?.toISOString() ?? null,
-      username: result.account?.username ?? null,
+      username: result.account?.username ?? result.account?.name ?? null,
       tenant_id: result.account?.tenantId ?? null,
       updated_at: new Date(),
     },
@@ -102,59 +128,33 @@ async function saveMetadata(result: msal.AuthenticationResult): Promise<void> {
       access_token: encrypt(result.accessToken),
       refresh_token: null,
       token_expiry: result.expiresOn?.toISOString() ?? null,
-      username: result.account?.username ?? null,
+      username: result.account?.username ?? result.account?.name ?? null,
       tenant_id: result.account?.tenantId ?? null,
     },
   })
 }
 
 /**
- * Generate the Microsoft OAuth2 authorization URL (Authorization Code + PKCE flow).
- * Stores the PKCE verifier in the DB for use during handleCallback.
+ * Generate the Microsoft OAuth2 authorization URL.
+ * Uses ConfidentialClientApplication so the token exchange includes the client_secret.
  * Frontend should redirect the browser to this URL.
  */
-export async function getAuthUrl(state: string): Promise<string> {
+export function getAuthUrl(state: string): Promise<string> {
   const redirectUri = process.env.AZURE_REDIRECT_URI
   if (!redirectUri) throw new GraphAuthError('AZURE_REDIRECT_URI environment variable is required')
-
-  const cryptoProvider = new msal.CryptoProvider()
-  const { verifier, challenge } = await cryptoProvider.generatePkceCodes()
-
-  await prisma.appSetting.upsert({
-    where: { key: PKCE_VERIFIER_KEY },
-    update: { value: encrypt(verifier), updated_at: new Date() },
-    create: { key: PKCE_VERIFIER_KEY, value: encrypt(verifier) },
-  })
-
-  return getPCA().getAuthCodeUrl({
-    scopes: SCOPES,
-    redirectUri,
-    state,
-    codeChallenge: challenge,
-    codeChallengeMethod: 'S256',
-  })
+  return getCCA().getAuthCodeUrl({ scopes: SCOPES, redirectUri, state })
 }
 
 /**
  * Exchange the authorization code (from the OAuth callback) for tokens.
- * Uses the PKCE verifier saved during getAuthUrl.
- * MSAL cache plugin persists the full token cache (including refresh token) to AppSetting.
+ * Uses CCA — sends client_secret to satisfy Azure AD's confidential client requirement.
  */
 export async function handleCallback(code: string): Promise<void> {
   const redirectUri = process.env.AZURE_REDIRECT_URI
   if (!redirectUri) throw new GraphAuthError('AZURE_REDIRECT_URI environment variable is required')
-
-  const verifierRow = await prisma.appSetting.findUnique({ where: { key: PKCE_VERIFIER_KEY } })
-  if (!verifierRow?.value) throw new GraphAuthError('PKCE verifier not found — restart the sign-in flow')
-  const codeVerifier = decrypt(verifierRow.value)
-  if (!codeVerifier) throw new GraphAuthError('PKCE verifier decryption failed — restart the sign-in flow')
-
-  const result = await getPCA().acquireTokenByCode({ code, scopes: SCOPES, redirectUri, codeVerifier })
+  const result = await getCCA().acquireTokenByCode({ code, scopes: SCOPES, redirectUri })
   if (!result) throw new GraphAuthError('acquireTokenByCode returned null')
   await saveMetadata(result)
-
-  // Clean up the one-time PKCE verifier
-  await prisma.appSetting.delete({ where: { key: PKCE_VERIFIER_KEY } }).catch(() => {})
 }
 
 /**
@@ -190,7 +190,6 @@ export function startDeviceCodeFlow(): Promise<DeviceCodeInfo> {
         if (!resolved) {
           reject(err)
         } else {
-          // Device code info already returned; log background polling failure only
           console.error('[graph-auth] Device code polling failed:', err.message)
         }
       })
@@ -200,7 +199,7 @@ export function startDeviceCodeFlow(): Promise<DeviceCodeInfo> {
 /**
  * Get a valid access token for Graph API calls.
  * Returns the cached access token if it has more than 5 minutes remaining.
- * Otherwise uses MSAL acquireTokenSilent which leverages the persisted refresh token.
+ * Otherwise uses acquireTokenSilent (checks CCA cache first, then PCA cache).
  * Throws GraphAuthError if the tenant is not connected.
  */
 export async function getAccessToken(): Promise<string> {
@@ -217,15 +216,31 @@ export async function getAccessToken(): Promise<string> {
     return decrypt(row.access_token)
   }
 
-  // Token expired or expiring soon — acquire silently using MSAL's cached refresh token
-  const pca = getPCA()
-  const accounts = await pca.getTokenCache().getAllAccounts()
-  if (!accounts.length) {
-    throw new GraphAuthError('No cached MSAL account — sign in again via Settings > Tenant Integration')
+  // Try CCA silent refresh first (used after auth code flow)
+  try {
+    const cca = getCCA()
+    const ccaAccounts = await cca.getTokenCache().getAllAccounts()
+    if (ccaAccounts.length) {
+      const result = await cca.acquireTokenSilent({ account: ccaAccounts[0], scopes: SCOPES })
+      if (result) {
+        await saveMetadata(result)
+        return result.accessToken
+      }
+    }
+  } catch {
+    // Fall through to PCA
   }
 
-  const result = await pca.acquireTokenSilent({ account: accounts[0], scopes: SCOPES })
-  if (!result) throw new GraphAuthError('Silent token refresh returned null')
-  await saveMetadata(result)
-  return result.accessToken
+  // Try PCA silent refresh (used after device code flow)
+  const pca = getPCA()
+  const pcaAccounts = await pca.getTokenCache().getAllAccounts()
+  if (pcaAccounts.length) {
+    const result = await pca.acquireTokenSilent({ account: pcaAccounts[0], scopes: SCOPES })
+    if (result) {
+      await saveMetadata(result)
+      return result.accessToken
+    }
+  }
+
+  throw new GraphAuthError('Token refresh failed — sign in again via Settings > Tenant Integration')
 }
