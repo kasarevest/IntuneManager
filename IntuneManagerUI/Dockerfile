@@ -67,6 +67,11 @@ COPY --from=server-builder /build/server/package.json  ./server/package.json
 # path.join(__dirname, '..', 'electron', 'ps-scripts') → /app/server/dist/electron/ps-scripts
 COPY electron/ps-scripts/ ./server/dist/electron/ps-scripts/
 
+# Copy shared PS library modules (Logger, Auth, GraphClient, UploadManager).
+# Scripts resolve $PSScriptRoot/../../../IntuneManager/Lib → /app/server/IntuneManager/Lib
+# ps-lib/ is pre-copied into the build context by the CI step before docker build.
+COPY ps-lib/ ./server/IntuneManager/Lib/
+
 # Copy React SPA (served as static files by Express in production)
 COPY --from=spa-builder /build/builds/dist-web/ ./builds/dist-web/
 
