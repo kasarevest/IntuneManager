@@ -205,7 +205,7 @@ Step 1 — Cleanup (delete uksouth resources)
 ### Technical Debt Log
 | Item | Trade-off | Resolution path |
 |---|---|---|
-| ~~`Connect-Tenant.ps1` uses MSAL.NET (.NET Framework) — fails on Linux pwsh~~ | ~~Phase 2 accepts broken tenant connect~~ | **RESOLVED Phase 3:** replaced with `@azure/msal-node` OAuth2 server-side flow; PS scripts receive token via `-AccessToken` param |
+| ~~`Connect-Tenant.ps1` uses MSAL.NET (.NET Framework) — fails on Linux pwsh~~ | ~~Phase 2 accepts broken tenant connect~~ | **RESOLVED Phase 3:** replaced with direct HTTP OAuth2 (`fetch()` to MS token endpoint; `@azure/msal-node` removed — caused `AADSTS7000218` via automatic PKCE injection on stateless confidential clients); PS scripts receive token via `-AccessToken` param |
 | `IntuneWinAppUtil.exe` Windows-only — not in Linux container | AI agent `build_package` tool will fail | Phase 4: Azure Container Instance (Windows, pay-per-second) triggered on demand |
 | In-memory `SSEManager` — single instance only | Fine for initial deployment; breaks if scaled to >1 replica | Phase 5: Azure Service Bus topic for fan-out |
 | `prisma db push` instead of `prisma migrate deploy` | No migrations folder yet; data-loss flag accepted | Generate migrations locally (`prisma migrate dev --name init`), commit, switch CI step |

@@ -218,6 +218,7 @@ IntuneManagerUI/Dockerfile
   `sqlserver://sql-intunemanager-prod.database.windows.net:1433;database=intunemanager;user=intuneadmin;password=<PWD>;encrypt=true;trustServerCertificate=false;connectionTimeout=60;loginTimeout=60`
 - `AZURE_CLIENT_ID` — Azure AD App Registration Application (client) ID
 - `AZURE_CLIENT_SECRET` — Azure AD App Registration client secret value
+- `AZURE_REDIRECT_URI` — OAuth2 callback URL (e.g. `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io/api/auth/ms-callback`)
 
 ### Database (Web Mode)
 
@@ -397,7 +398,7 @@ The Dashboard (`/dashboard`) provides an at-a-glance view of both app inventory 
 
 2. **Microsoft tenant auth** — Two implementations depending on deployment mode:
    - **Desktop (Electron):** MSAL.NET via `Auth.psm1` (Microsoft Graph PowerShell client ID `14d82eec-204b-4c2f-b7e8-296a70dab67e`, pre-consented in M365 tenants). Browser-based interactive login and device code flow. Token cache is DPAPI-encrypted per-user.
-   - **Web (Container Apps):** `@azure/msal-node` `ConfidentialClientApplication` via `server/services/graph-auth.ts`. Supports OAuth2 Authorization Code Flow (full-page browser redirect) and Device Code Flow. Tokens are AES-256-CBC encrypted (keyed by `APP_SECRET_KEY`) and stored in `tenant_config.access_token` / `tenant_config.refresh_token`. Auto-refreshes when token has less than 5 minutes remaining. Requires an Azure AD App Registration (`AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` env vars).
+   - **Web (Container Apps):** Direct HTTP OAuth2 via Node 20 built-in `fetch()` in `server/services/graph-auth.ts` — no MSAL dependency. Supports OAuth2 Authorization Code Flow (full-page browser redirect) and Device Code Flow. Token requests POST `client_secret` explicitly in the request body, bypassing `@azure/msal-node`'s automatic PKCE injection which caused `AADSTS7000218` on confidential clients. Tokens are AES-256-CBC encrypted (keyed by `APP_SECRET_KEY`) and stored in `tenant_config.access_token` / `tenant_config.refresh_token`. Auto-refreshes when token has less than 5 minutes remaining. Requires an Azure AD App Registration (`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_REDIRECT_URI` env vars).
 
 ---
 
@@ -512,7 +513,7 @@ IntuneManager\
 │   │   ├── services\
 │   │   │   ├── ps-bridge.ts   <- Server-side PowerShell spawn (platform-aware)
 │   │   │   ├── cache.ts       <- Prisma-backed key-value cache (replaces better-sqlite3 in web mode)
-│   │   │   ├── graph-auth.ts  <- @azure/msal-node OAuth2 service (getAuthUrl/handleCallback/startDeviceCodeFlow/getAccessToken)
+│   │   │   ├── graph-auth.ts  <- Direct HTTP OAuth2 service (getAuthUrl/handleCallback/startDeviceCodeFlow/getAccessToken)
 │   │   │   └── encryption.ts  <- AES-256-CBC encrypt/decrypt (keyed by APP_SECRET_KEY)
 │   │   ├── routes\
 │   │   │   ├── auth.ts        <- Local auth endpoints (login, session, users)
@@ -581,7 +582,7 @@ IntuneManager\
 | `express` | ^4 | HTTP server |
 | `@prisma/client` | ^6 | SQL Server ORM |
 | `@anthropic-ai/sdk` | ^0.36.3 | Claude API client |
-| `@azure/msal-node` | ^2.16 | Microsoft OAuth2 (Authorization Code + Device Code flows) |
+| Node 20 built-in `fetch()` | — | Microsoft OAuth2 direct HTTP (Authorization Code + Device Code flows); no MSAL dependency |
 | `bcryptjs` | ^2.4.3 | Password hashing |
 | `jsonwebtoken` | ^9 | JWT session tokens |
 | `cors` | ^2 | CORS middleware |

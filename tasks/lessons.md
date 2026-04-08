@@ -754,6 +754,25 @@ The Phase 3 solution keeps PS scripts for Graph API calls but removes MSAL from 
 | GraphAuthError sentinel | Export a named error class `GraphAuthError extends Error` from `graph-auth.ts`; catch it in routes and return 401 rather than 500 |
 | Azure AD App Registration requirement | OAuth2 Authorization Code + Device Code flows require a registered app with a client ID + secret. This is a manual Azure portal step that cannot be automated. Document it prominently as a prerequisite before the first deploy |
 
+### Addendum — AADSTS7000218 and msal-node PKCE Auto-Injection (2026-04-07)
+
+After implementing the above patterns with `@azure/msal-node`, every token exchange returned `AADSTS7000218: The request body must contain the following parameter: 'client_assertion' or 'client_secret'` even though the CCA was configured with a `clientSecret`.
+
+**Root cause:** `@azure/msal-node` v2.x `ConfidentialClientApplication.getAuthCodeUrl()` **automatically adds PKCE parameters** (`code_challenge`, `code_challenge_method=S256`) to the authorization URL, even when not explicitly requested and even on confidential clients that should use `client_secret` instead. When `acquireTokenByCode` runs in the subsequent request, it creates a **new CCA instance** (stateless server) that has no knowledge of the PKCE verifier generated in the first instance. Azure AD receives a token request with a `code_challenge` in the auth URL but no `code_verifier` in the token request — and because the PKCE pair is incomplete, MSAL omits `client_secret` entirely, triggering AADSTS7000218.
+
+**Storing the PKCE verifier in the DB and passing it to `acquireTokenByCode` did not resolve the issue** — MSAL's internal state management still caused `client_secret` to be omitted.
+
+**Resolution:** Replaced `@azure/msal-node` entirely with direct HTTP `fetch()` calls to Microsoft's OAuth2 endpoints (`https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize` and `.../token`). `getAuthUrl()` builds a plain authorization URL with no PKCE parameters. `handleCallback()` POSTs `client_secret` explicitly in the request body as a `URLSearchParams`. This gives full control over every parameter sent to Azure AD and reliably produces a valid token exchange.
+
+**New heuristic:** When a confidential client (app registration with `client_secret`) needs Authorization Code Flow on a stateless server, **do not use `@azure/msal-node` v2.x** — use direct HTTP to the token endpoint and include `client_secret` explicitly. MSAL's PKCE auto-injection makes stateless confidential client flows unreliable. The public client equivalent (device code flow, `14d82eec` Graph PowerShell ID) avoids this problem entirely because it has no secret.
+
+| Pattern | Implementation |
+|---------|----------------|
+| Direct HTTP auth URL (no PKCE) | `new URLSearchParams({ client_id, response_type: 'code', redirect_uri, scope, response_mode: 'query', state })` → `${AUTHORITY}/authorize?${params}` |
+| Direct HTTP token exchange | POST `${AUTHORITY}/token` with `Content-Type: application/x-www-form-urlencoded`; body includes `client_id`, `client_secret`, `code`, `redirect_uri`, `grant_type: 'authorization_code'`, `scope` |
+| Direct HTTP refresh | POST `${AUTHORITY}/token` with `client_id`, `client_secret`, `refresh_token`, `grant_type: 'refresh_token'`, `scope` |
+| Direct HTTP device code | POST `${AUTHORITY}/devicecode` with `client_id`, `scope` → get `device_code`, `user_code`, `verification_uri`; poll `${AUTHORITY}/token` with `grant_type: urn:ietf:params:oauth:grant-type:device_code` |
+
 ---
 
 ## Lesson Template (copy for new entries)

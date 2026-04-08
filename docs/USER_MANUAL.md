@@ -99,7 +99,7 @@ The following are required before the hosted web app can connect to your Microso
 | **Azure AD App Registration** | In `portal.azure.com` → Azure Active Directory → App registrations → New registration. Name: `IntuneManager Web`. Supported accounts: `Accounts in any organizational directory`. Redirect URI (Web): `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io/api/auth/ms-callback` |
 | **API permissions (Delegated)** | In the App Registration → API permissions → Add → Microsoft Graph → Delegated: `DeviceManagementApps.ReadWrite.All`, `DeviceManagementConfiguration.Read.All`, `User.Read` |
 | **Client secret** | In the App Registration → Certificates & secrets → New client secret. Copy the value immediately — it is only shown once |
-| **GitHub Secrets** | In your GitHub repo → Settings → Secrets → Actions: add `AZURE_CLIENT_ID` (Application ID) and `AZURE_CLIENT_SECRET` (secret value). The next CI/CD deploy will inject these into the Container App |
+| **GitHub Secrets** | In your GitHub repo → Settings → Secrets → Actions: add `AZURE_CLIENT_ID` (Application ID), `AZURE_CLIENT_SECRET` (secret value), and `AZURE_REDIRECT_URI` (the callback URL: `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io/api/auth/ms-callback`). The next CI/CD deploy will inject these into the Container App |
 
 > **Note:** The first time a user connects their tenant, Microsoft may prompt them to grant admin consent for the required permissions. A Global Administrator or Intune Administrator account is needed for this.
 

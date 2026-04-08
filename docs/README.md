@@ -33,8 +33,9 @@ CI/CD pushes to `master` branch trigger an automatic build and deploy.
 |--------|---------|
 | `AZURE_CREDENTIALS` | Service principal JSON for `az login` |
 | `DATABASE_URL` | Azure SQL connection string (sqlserver://) |
-| `AZURE_CLIENT_ID` | Azure AD App Registration client ID (Phase 3 tenant auth) |
-| `AZURE_CLIENT_SECRET` | Azure AD App Registration client secret (Phase 3 tenant auth) |
+| `AZURE_CLIENT_ID` | Azure AD App Registration client ID (tenant auth) |
+| `AZURE_CLIENT_SECRET` | Azure AD App Registration client secret (tenant auth) |
+| `AZURE_REDIRECT_URI` | OAuth2 callback URL (tenant auth) |
 
 ---
 
