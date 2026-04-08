@@ -17,7 +17,7 @@ const router = Router()
 // Redirect the browser to Microsoft's OAuth2 authorization endpoint
 router.get('/api/auth/ms-login', async (_req, res) => {
   try {
-    const authUrl = await getAuthUrl('intunemanager')
+    const authUrl = getAuthUrl('intunemanager')
     res.redirect(authUrl)
   } catch (err) {
     console.error('ms-login error:', (err as Error).message)

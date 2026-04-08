@@ -1,34 +1,28 @@
 /**
  * graph-auth.ts
- * Server-side Microsoft Graph authentication using @azure/msal-node.
- * Replaces the MSAL.NET PS-script approach that fails on Linux.
+ * Server-side Microsoft Graph authentication via direct HTTP calls to Microsoft OAuth endpoints.
  *
- * Three flows supported:
- *   1. Authorization Code Flow   — browser redirects via ConfidentialClientApplication
- *                                  (sends client_secret; required when app has a secret in Azure AD)
- *   2. Device Code Flow          — PublicClientApplication (no secret needed for device flow)
- *   3. Silent refresh            — acquireTokenSilent via MSAL token cache
+ * Replaces @azure/msal-node entirely — MSAL v2.x omits client_secret from token requests
+ * when PKCE is involved (causes AADSTS7000218 regardless of CCA/PCA configuration).
+ * Direct HTTP gives us full control over every parameter sent to the token endpoint.
  *
- * Token persistence:
- *   - CCA token cache → app_settings key 'msal_cache_cca' (auth code path)
- *   - PCA token cache → app_settings key 'msal_cache_pca' (device code path)
- *   - TenantConfig stores latest access_token + display metadata for PS script injection and UI
+ * Flows:
+ *   1. Authorization Code + client_secret  — getAuthUrl / handleCallback
+ *   2. Device Code                         — startDeviceCodeFlow (polls in background)
+ *   3. Refresh token                       — getAccessToken (auto-refreshes from stored token)
  */
 
-import * as msal from '@azure/msal-node'
 import { encrypt, decrypt } from './encryption'
 import prisma from '../db'
+
+const AUTHORITY = 'https://login.microsoftonline.com/organizations/oauth2/v2.0'
 
 const SCOPES = [
   'DeviceManagementApps.ReadWrite.All',
   'DeviceManagementConfiguration.Read.All',
   'User.Read',
   'offline_access',
-]
-
-const CCA_CACHE_KEY = 'msal_cache_cca'
-const PCA_CACHE_KEY = 'msal_cache_pca'
-const PKCE_VERIFIER_KEY = 'msal_pkce_verifier'
+].join(' ')
 
 export interface DeviceCodeInfo {
   userCode: string
@@ -43,190 +37,200 @@ export class GraphAuthError extends Error {
   }
 }
 
-function makeCachePlugin(dbKey: string): msal.ICachePlugin {
-  return {
-    async beforeCacheAccess(cacheContext: msal.TokenCacheContext): Promise<void> {
-      const row = await prisma.appSetting.findUnique({ where: { key: dbKey } })
-      if (row?.value) {
-        const serialized = decrypt(row.value)
-        if (serialized) cacheContext.tokenCache.deserialize(serialized)
-      }
-    },
-    async afterCacheAccess(cacheContext: msal.TokenCacheContext): Promise<void> {
-      if (cacheContext.cacheHasChanged) {
-        const serialized = cacheContext.tokenCache.serialize()
-        await prisma.appSetting.upsert({
-          where: { key: dbKey },
-          update: { value: encrypt(serialized), updated_at: new Date() },
-          create: { key: dbKey, value: encrypt(serialized) },
-        })
-      }
-    },
-  }
-}
-
-// ConfidentialClientApplication — used for Authorization Code flow.
-// Azure AD requires the client_secret when the app registration has one defined.
-function getCCA(): msal.ConfidentialClientApplication {
+function requireEnv(): { clientId: string; clientSecret: string; redirectUri: string } {
   const clientId = process.env.AZURE_CLIENT_ID
   const clientSecret = process.env.AZURE_CLIENT_SECRET
-  if (!clientId || !clientSecret) {
-    throw new GraphAuthError('AZURE_CLIENT_ID and AZURE_CLIENT_SECRET environment variables are required')
+  const redirectUri = process.env.AZURE_REDIRECT_URI
+  if (!clientId || !clientSecret || !redirectUri) {
+    throw new GraphAuthError('AZURE_CLIENT_ID, AZURE_CLIENT_SECRET and AZURE_REDIRECT_URI are required')
   }
-  return new msal.ConfidentialClientApplication({
-    auth: {
-      clientId,
-      authority: 'https://login.microsoftonline.com/organizations',
-      clientSecret,
-    },
-    cache: { cachePlugin: makeCachePlugin(CCA_CACHE_KEY) },
-    system: {
-      loggerOptions: {
-        loggerCallback: () => {},
-        piiLoggingEnabled: false,
-        logLevel: msal.LogLevel.Error,
-      },
-    },
-  })
+  return { clientId, clientSecret, redirectUri }
 }
 
-// PublicClientApplication — used for Device Code flow only.
-// Device code does not use the client_secret.
-function getPCA(): msal.PublicClientApplication {
-  const clientId = process.env.AZURE_CLIENT_ID
-  if (!clientId) throw new GraphAuthError('AZURE_CLIENT_ID environment variable is required')
-  return new msal.PublicClientApplication({
-    auth: {
-      clientId,
-      authority: 'https://login.microsoftonline.com/organizations',
-    },
-    cache: { cachePlugin: makeCachePlugin(PCA_CACHE_KEY) },
-    system: {
-      loggerOptions: {
-        loggerCallback: () => {},
-        piiLoggingEnabled: false,
-        logLevel: msal.LogLevel.Error,
-      },
-    },
-  })
+function parseJwt(token: string): Record<string, unknown> {
+  try {
+    const payload = token.split('.')[1]
+    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  } catch {
+    return {}
+  }
 }
 
-// Save access token + display metadata to TenantConfig.
-// Refresh tokens are managed by the MSAL cache plugin — not stored here.
-async function saveMetadata(result: msal.AuthenticationResult): Promise<void> {
+async function saveTokens(tokens: {
+  access_token: string
+  refresh_token?: string
+  expires_in: number
+  id_token?: string
+}): Promise<void> {
+  const claims = tokens.id_token ? parseJwt(tokens.id_token) : {}
+  const username =
+    (claims.preferred_username as string | undefined) ??
+    (claims.unique_name as string | undefined) ??
+    (claims.upn as string | undefined) ??
+    null
+  const tenantId = (claims.tid as string | undefined) ?? null
+  const expiry = new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+
   await prisma.tenantConfig.upsert({
     where: { id: 1 },
     update: {
-      access_token: encrypt(result.accessToken),
-      refresh_token: null,
-      token_expiry: result.expiresOn?.toISOString() ?? null,
-      username: result.account?.username ?? result.account?.name ?? null,
-      tenant_id: result.account?.tenantId ?? null,
+      access_token: encrypt(tokens.access_token),
+      refresh_token: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
+      token_expiry: expiry,
+      username,
+      tenant_id: tenantId,
       updated_at: new Date(),
     },
     create: {
       id: 1,
-      access_token: encrypt(result.accessToken),
-      refresh_token: null,
-      token_expiry: result.expiresOn?.toISOString() ?? null,
-      username: result.account?.username ?? result.account?.name ?? null,
-      tenant_id: result.account?.tenantId ?? null,
+      access_token: encrypt(tokens.access_token),
+      refresh_token: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
+      token_expiry: expiry,
+      username,
+      tenant_id: tenantId,
     },
   })
 }
 
 /**
- * Generate the Microsoft OAuth2 authorization URL.
- * Uses CCA (sends client_secret in token request) + explicit PKCE (msal-node v2.x generates
- * PKCE automatically even for CCA, so we generate it ourselves and store the verifier in DB
- * to have it available in handleCallback, which runs in a separate CCA instance).
+ * Build the Microsoft OAuth2 authorization URL.
+ * Standard authorization code flow — no PKCE (client_secret is used instead).
  */
-export async function getAuthUrl(state: string): Promise<string> {
-  const redirectUri = process.env.AZURE_REDIRECT_URI
-  if (!redirectUri) throw new GraphAuthError('AZURE_REDIRECT_URI environment variable is required')
-
-  const { verifier, challenge } = await new msal.CryptoProvider().generatePkceCodes()
-
-  await prisma.appSetting.upsert({
-    where: { key: PKCE_VERIFIER_KEY },
-    update: { value: encrypt(verifier), updated_at: new Date() },
-    create: { key: PKCE_VERIFIER_KEY, value: encrypt(verifier) },
-  })
-
-  return getCCA().getAuthCodeUrl({
-    scopes: SCOPES,
-    redirectUri,
+export function getAuthUrl(state: string): string {
+  const { clientId, redirectUri } = requireEnv()
+  const params = new URLSearchParams({
+    client_id: clientId,
+    response_type: 'code',
+    redirect_uri: redirectUri,
+    scope: SCOPES,
+    response_mode: 'query',
     state,
-    codeChallenge: challenge,
-    codeChallengeMethod: 'S256',
   })
+  return `${AUTHORITY}/authorize?${params}`
 }
 
 /**
- * Exchange the authorization code (from the OAuth callback) for tokens.
- * CCA sends client_secret automatically; codeVerifier satisfies the PKCE challenge
- * that msal-node included in the authorization URL.
+ * Exchange the authorization code for tokens.
+ * Sends client_secret explicitly in the POST body — satisfies AADSTS7000218.
  */
 export async function handleCallback(code: string): Promise<void> {
-  const redirectUri = process.env.AZURE_REDIRECT_URI
-  if (!redirectUri) throw new GraphAuthError('AZURE_REDIRECT_URI environment variable is required')
+  const { clientId, clientSecret, redirectUri } = requireEnv()
 
-  const verifierRow = await prisma.appSetting.findUnique({ where: { key: PKCE_VERIFIER_KEY } })
-  if (!verifierRow?.value) throw new GraphAuthError('PKCE verifier not found — restart the sign-in flow')
-  const codeVerifier = decrypt(verifierRow.value)
-  if (!codeVerifier) throw new GraphAuthError('PKCE verifier decryption failed — restart the sign-in flow')
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    code,
+    redirect_uri: redirectUri,
+    grant_type: 'authorization_code',
+    scope: SCOPES,
+  })
 
-  const result = await getCCA().acquireTokenByCode({ code, scopes: SCOPES, redirectUri, codeVerifier })
-  if (!result) throw new GraphAuthError('acquireTokenByCode returned null')
-  await saveMetadata(result)
+  const res = await fetch(`${AUTHORITY}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
 
-  await prisma.appSetting.delete({ where: { key: PKCE_VERIFIER_KEY } }).catch(() => {})
+  const data = await res.json() as Record<string, unknown>
+  if (!res.ok) {
+    const desc = (data.error_description ?? data.error ?? `HTTP ${res.status}`) as string
+    throw new GraphAuthError(desc)
+  }
+
+  await saveTokens({
+    access_token: data.access_token as string,
+    refresh_token: data.refresh_token as string | undefined,
+    expires_in: (data.expires_in as number) ?? 3600,
+    id_token: data.id_token as string | undefined,
+  })
 }
 
 /**
  * Start the Device Code flow.
- * Returns device code info immediately so the frontend can display it.
- * MSAL polls in the background; tokens are saved when the user completes auth on their device.
+ * Returns the user_code + verification_uri immediately so the frontend can display them.
+ * Polls the token endpoint in the background; saves tokens on completion.
  */
 export function startDeviceCodeFlow(): Promise<DeviceCodeInfo> {
+  const { clientId } = requireEnv()
+
   return new Promise<DeviceCodeInfo>((resolve, reject) => {
     let resolved = false
-    const pca = getPCA()
 
-    const tokenPromise = pca.acquireTokenByDeviceCode({
-      scopes: SCOPES,
-      deviceCodeCallback: (response) => {
-        if (!resolved) {
-          resolved = true
-          resolve({
-            userCode: response.userCode,
-            verificationUri: response.verificationUri,
-            message: response.message,
-          })
-        }
-      },
+    const start = async () => {
+      const initBody = new URLSearchParams({ client_id: clientId, scope: SCOPES })
+      const initRes = await fetch(`${AUTHORITY}/devicecode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: initBody.toString(),
+      })
+      if (!initRes.ok) {
+        const err = await initRes.json() as Record<string, unknown>
+        throw new GraphAuthError((err.error_description ?? err.error ?? 'Device code request failed') as string)
+      }
+
+      const info = await initRes.json() as {
+        device_code: string
+        user_code: string
+        verification_uri: string
+        message: string
+        expires_in: number
+        interval: number
+      }
+
+      resolved = true
+      resolve({ userCode: info.user_code, verificationUri: info.verification_uri, message: info.message })
+
+      // Poll in background
+      await pollDeviceCode(clientId, info.device_code, info.interval)
+    }
+
+    start().catch((err: Error) => {
+      if (!resolved) reject(err)
+      else console.error('[graph-auth] Device code error:', err.message)
+    })
+  })
+}
+
+async function pollDeviceCode(clientId: string, deviceCode: string, intervalSec: number): Promise<void> {
+  let interval = intervalSec
+
+  while (true) {
+    await new Promise(r => setTimeout(r, interval * 1000))
+
+    const body = new URLSearchParams({
+      client_id: clientId,
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      device_code: deviceCode,
     })
 
-    // Runs in background — saves tokens when user completes auth on their device
-    tokenPromise
-      .then((result: msal.AuthenticationResult | null) => {
-        if (result) return saveMetadata(result)
+    const res = await fetch(`${AUTHORITY}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    })
+
+    const data = await res.json() as Record<string, unknown>
+
+    if (data.access_token) {
+      await saveTokens({
+        access_token: data.access_token as string,
+        refresh_token: data.refresh_token as string | undefined,
+        expires_in: (data.expires_in as number) ?? 3600,
+        id_token: data.id_token as string | undefined,
       })
-      .catch((err: Error) => {
-        if (!resolved) {
-          reject(err)
-        } else {
-          console.error('[graph-auth] Device code polling failed:', err.message)
-        }
-      })
-  })
+      return
+    }
+
+    const error = data.error as string | undefined
+    if (error === 'authorization_pending') continue
+    if (error === 'slow_down') { interval += 5; continue }
+    throw new GraphAuthError(`Device code polling failed: ${error ?? 'unknown error'}`)
+  }
 }
 
 /**
  * Get a valid access token for Graph API calls.
- * Returns the cached access token if it has more than 5 minutes remaining.
- * Otherwise uses acquireTokenSilent (checks CCA cache first, then PCA cache).
- * Throws GraphAuthError if the tenant is not connected.
+ * Returns the cached token if more than 5 minutes remain; otherwise refreshes via stored refresh_token.
  */
 export async function getAccessToken(): Promise<string> {
   const row = await prisma.tenantConfig.findUnique({ where: { id: 1 } })
@@ -242,31 +246,37 @@ export async function getAccessToken(): Promise<string> {
     return decrypt(row.access_token)
   }
 
-  // Try CCA silent refresh first (used after auth code flow)
-  try {
-    const cca = getCCA()
-    const ccaAccounts = await cca.getTokenCache().getAllAccounts()
-    if (ccaAccounts.length) {
-      const result = await cca.acquireTokenSilent({ account: ccaAccounts[0], scopes: SCOPES })
-      if (result) {
-        await saveMetadata(result)
-        return result.accessToken
-      }
-    }
-  } catch {
-    // Fall through to PCA
+  if (!row.refresh_token) {
+    throw new GraphAuthError('Token expired — sign in again via Settings > Tenant Integration')
   }
 
-  // Try PCA silent refresh (used after device code flow)
-  const pca = getPCA()
-  const pcaAccounts = await pca.getTokenCache().getAllAccounts()
-  if (pcaAccounts.length) {
-    const result = await pca.acquireTokenSilent({ account: pcaAccounts[0], scopes: SCOPES })
-    if (result) {
-      await saveMetadata(result)
-      return result.accessToken
-    }
+  const { clientId, clientSecret } = requireEnv()
+  const refreshToken = decrypt(row.refresh_token)
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token',
+    scope: SCOPES,
+  })
+
+  const res = await fetch(`${AUTHORITY}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
+
+  const data = await res.json() as Record<string, unknown>
+  if (!res.ok) {
+    const desc = (data.error_description ?? data.error ?? `HTTP ${res.status}`) as string
+    throw new GraphAuthError(`Token refresh failed: ${desc}`)
   }
 
-  throw new GraphAuthError('Token refresh failed — sign in again via Settings > Tenant Integration')
+  await saveTokens({
+    access_token: data.access_token as string,
+    refresh_token: (data.refresh_token as string | undefined) ?? refreshToken,
+    expires_in: (data.expires_in as number) ?? 3600,
+  })
+  return data.access_token as string
 }
