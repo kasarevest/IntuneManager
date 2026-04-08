@@ -1,23 +1,26 @@
-﻿#Requires -Version 5.1
+#Requires -Version 7.0
 param(
-    [Parameter(Mandatory)] [string]$DeviceId
+    [Parameter(Mandatory)] [string]$DeviceId,
+    [string]$AccessToken = ''
 )
 $OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
+function Write-Log([string]$Message, [string]$Level = 'INFO') {
+    Write-Output "LOG:[$Level] $Message"
+}
+
 try {
-    $LibPath = Join-Path $PSScriptRoot '..\..\..\IntuneManager\Lib'
-    Import-Module (Join-Path $LibPath 'Logger.psm1') -Force
-    Import-Module (Join-Path $LibPath 'Auth.psm1') -Force
-    Import-Module (Join-Path $LibPath 'GraphClient.psm1') -Force
+    if (-not $AccessToken) { throw 'AccessToken is required' }
 
-    Write-AppLog "Triggering Windows Update sync for device: $DeviceId"
+    Write-Log "Triggering Windows Update sync for device: $DeviceId"
 
-    # Graph action: syncDevice — forces the device to check for updates immediately
+    $headers = @{ Authorization = "Bearer $AccessToken" }
     $uri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$DeviceId/syncDevice"
-    Invoke-GraphRequest -Method POST -Uri $uri | Out-Null
+    Invoke-RestMethod -Method POST -Uri $uri -Headers $headers | Out-Null
 
-    Write-AppLog 'Windows Update sync triggered successfully'
+    Write-Log 'Windows Update sync triggered successfully'
     Write-Output "RESULT:$(ConvertTo-Json @{ success = $true } -Compress)"
 } catch {
     Write-Output "RESULT:$(ConvertTo-Json @{ success = $false; error = $_.Exception.Message } -Compress)"

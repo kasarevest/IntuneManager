@@ -237,21 +237,36 @@ router.get('/api/ps/list-packages', requireAuth as import('express').RequestHand
 // POST /api/ps/trigger-windows-update
 router.post('/api/ps/trigger-windows-update', requireAuth as import('express').RequestHandler, async (req, res) => {
   const { deviceId } = req.body as { deviceId: string }
-  const result = await runPsScript('Invoke-WindowsUpdate.ps1', ['-DeviceId', deviceId])
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
+  const result = await runPsScript('Invoke-WindowsUpdate.ps1', ['-DeviceId', deviceId, '-AccessToken', accessToken])
   res.json(result.result ?? { success: false, error: 'No result from PS script' })
 })
 
 // POST /api/ps/trigger-driver-update
 router.post('/api/ps/trigger-driver-update', requireAuth as import('express').RequestHandler, async (req, res) => {
   const { deviceId } = req.body as { deviceId: string }
-  const result = await runPsScript('Invoke-DriverUpdate.ps1', ['-DeviceId', deviceId])
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
+  const result = await runPsScript('Invoke-DriverUpdate.ps1', ['-DeviceId', deviceId, '-AccessToken', accessToken])
   res.json(result.result ?? { success: false, error: 'No result from PS script' })
 })
 
 // POST /api/ps/download-diagnostics
 router.post('/api/ps/download-diagnostics', requireAuth as import('express').RequestHandler, async (req, res) => {
   const { deviceId, deviceName } = req.body as { deviceId: string; deviceName: string }
-  const result = await runPsScript('Get-DeviceDiagnostics.ps1', ['-DeviceId', deviceId, '-DeviceName', deviceName])
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
+  const result = await runPsScript('Get-DeviceDiagnostics.ps1', ['-DeviceId', deviceId, '-DeviceName', deviceName, '-AccessToken', accessToken])
   res.json(result.result ?? { success: false, error: 'No result from PS script' })
 })
 

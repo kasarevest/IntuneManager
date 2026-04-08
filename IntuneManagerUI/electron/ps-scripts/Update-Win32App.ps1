@@ -1,9 +1,11 @@
-﻿#Requires -Version 5.1
-param([string]$AppId, [string]$BodyJson, [string]$AccessToken = '')
-
+#Requires -Version 7.0
+param(
+    [Parameter(Mandatory)] [string]$AppId,
+    [string]$BodyJson = '',
+    [string]$AccessToken = ''
+)
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
 $ErrorActionPreference = 'Stop'
 
 function Write-Log([string]$Message, [string]$Level = 'INFO') {
@@ -11,16 +13,19 @@ function Write-Log([string]$Message, [string]$Level = 'INFO') {
 }
 
 try {
-    $LibPath = Join-Path $PSScriptRoot '..\..\..\IntuneManager\Lib'
-    Import-Module (Join-Path $LibPath 'Logger.psm1') -Force
-    Import-Module (Join-Path $LibPath 'Auth.psm1') -Force
-    Import-Module (Join-Path $LibPath 'GraphClient.psm1') -Force
-    if ($AccessToken) { Set-GraphAccessToken -Token $AccessToken }
-
-    $body = $BodyJson | ConvertFrom-Json
+    if (-not $AccessToken) { throw 'AccessToken is required' }
+    if (-not $BodyJson)    { throw 'BodyJson is required' }
 
     Write-Log "Updating Intune app: $AppId"
-    Update-Win32App -AppId $AppId -Body $body
+
+    $headers = @{
+        Authorization  = "Bearer $AccessToken"
+        'Content-Type' = 'application/json'
+    }
+
+    $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$AppId"
+    # Pass raw JSON to preserve @odata.type, array types, etc.
+    Invoke-RestMethod -Method PATCH -Uri $uri -Headers $headers -Body $BodyJson | Out-Null
 
     Write-Log "App updated: $AppId"
     Write-Output "RESULT:$(ConvertTo-Json @{ success = $true; appId = $AppId } -Compress)"

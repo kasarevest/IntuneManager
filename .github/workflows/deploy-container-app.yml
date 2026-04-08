@@ -44,12 +44,6 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      # Copy IntuneManager/Lib (sibling of IntuneManagerUI) into the Docker build context.
-      # PS scripts resolve $PSScriptRoot/../../../IntuneManager/Lib which lands at
-      # /app/server/IntuneManager/Lib in the container — must be present at build time.
-      - name: Copy PS lib modules into Docker build context
-        run: cp -r IntuneManager/Lib IntuneManagerUI/ps-lib
-
       - name: Build and push Docker image
         id: build
         uses: docker/build-push-action@v5

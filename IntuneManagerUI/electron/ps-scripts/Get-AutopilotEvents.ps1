@@ -1,62 +1,53 @@
-#Requires -Version 5.1
+#Requires -Version 7.0
 param([string]$AccessToken = '')
 $OutputEncoding = [System.Text.Encoding]::UTF8
-
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
+function Write-Log([string]$Message, [string]$Level = 'INFO') {
+    Write-Output "LOG:[$Level] $Message"
+}
+
 try {
-    $LibPath = Join-Path $PSScriptRoot '..\..\..\IntuneManager\Lib'
-    Import-Module (Join-Path $LibPath 'Logger.psm1') -Force
-    Import-Module (Join-Path $LibPath 'Auth.psm1') -Force
-    Import-Module (Join-Path $LibPath 'GraphClient.psm1') -Force
-    if ($AccessToken) { Set-GraphAccessToken -Token $AccessToken }
+    if (-not $AccessToken) { throw 'AccessToken is required' }
 
-    Write-AppLog 'Fetching Autopilot enrollment events from Intune...'
+    Write-Log 'Fetching Autopilot enrollment events from Intune...'
 
+    $headers = @{ Authorization = "Bearer $AccessToken" }
     $uri = 'https://graph.microsoft.com/v1.0/deviceManagement/autopilotEvents' +
            '?$select=id,deviceRegisteredDateTime,enrollmentState,enrollmentFailureDetails&$top=999'
 
     $allEvents = [System.Collections.Generic.List[object]]::new()
     $nextUri = $uri
     while ($nextUri) {
-        $response = Invoke-GraphRequest -Method GET -Uri $nextUri
+        $response = Invoke-RestMethod -Method GET -Uri $nextUri -Headers $headers
         if ($response.value) { $allEvents.AddRange([object[]]$response.value) }
-        $nextUri = if ($response.PSObject.Properties['@odata.nextLink']) { $response.'@odata.nextLink' } else { $null }
+        $nextUri = $response.'@odata.nextLink'
     }
 
-    Write-AppLog "Retrieved $($allEvents.Count) Autopilot event(s)"
+    Write-Log "Retrieved $($allEvents.Count) Autopilot event(s)"
 
-    # Filter to last 30 days
     $cutoff = (Get-Date).AddDays(-30)
 
     $eventList = [System.Collections.Generic.List[object]]::new()
     foreach ($ev in $allEvents) {
-        $regDateStr = if ($ev.PSObject.Properties['deviceRegisteredDateTime']) { [string]$ev.deviceRegisteredDateTime } else { '' }
+        $regDateStr = [string]($ev.deviceRegisteredDateTime ?? '')
 
-        # Only include events within the last 30 days
         if ($regDateStr -ne '') {
             try {
-                $regDate = [datetime]::Parse($regDateStr)
-                if ($regDate -lt $cutoff) { continue }
-            } catch {
-                # If date cannot be parsed, include the event anyway
-            }
-        }
-
-        $failureDetails = $null
-        if ($ev.PSObject.Properties['enrollmentFailureDetails'] -and $ev.enrollmentFailureDetails -ne $null) {
-            $failureDetails = [string]$ev.enrollmentFailureDetails
+                if ([datetime]::Parse($regDateStr) -lt $cutoff) { continue }
+            } catch { }
         }
 
         $eventList.Add(@{
-            id                       = if ($ev.PSObject.Properties['id'])              { [string]$ev.id }              else { '' }
+            id                       = [string]($ev.id ?? '')
             deviceRegisteredDateTime = $regDateStr
-            enrollmentState          = if ($ev.PSObject.Properties['enrollmentState']) { [string]$ev.enrollmentState } else { '' }
-            enrollmentFailureDetails = $failureDetails
+            enrollmentState          = [string]($ev.enrollmentState ?? '')
+            enrollmentFailureDetails = if ($ev.enrollmentFailureDetails) { [string]$ev.enrollmentFailureDetails } else { $null }
         })
     }
 
-    Write-AppLog "Returning $($eventList.Count) event(s) within the last 30 days"
+    Write-Log "Returning $($eventList.Count) event(s) within the last 30 days"
     Write-Output "RESULT:$(ConvertTo-Json @{ success = $true; events = @($eventList) } -Compress -Depth 5)"
 } catch {
     $msg = $_.Exception.Message

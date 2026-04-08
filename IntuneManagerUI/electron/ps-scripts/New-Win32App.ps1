@@ -1,12 +1,11 @@
-#Requires -Version 5.1
+#Requires -Version 7.0
 param(
-    [string]$BodyJsonPath,   # Path to a temp file containing the JSON body (avoids PS 5.1 arg-mangling)
+    [string]$BodyJson = '',       # Raw JSON body (PS7 handles JSON natively with no arg-mangling)
+    [string]$BodyJsonPath = '',   # Legacy: path to JSON temp file (also accepted for compatibility)
     [string]$AccessToken = ''
 )
-
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
 $ErrorActionPreference = 'Stop'
 
 function Write-Log([string]$Message, [string]$Level = 'INFO') {
@@ -14,57 +13,45 @@ function Write-Log([string]$Message, [string]$Level = 'INFO') {
 }
 
 try {
-    $LibPath = Join-Path $PSScriptRoot '..\..\..\IntuneManager\Lib'
-    Import-Module (Join-Path $LibPath 'Logger.psm1') -Force
-    Import-Module (Join-Path $LibPath 'Auth.psm1') -Force
-    Import-Module (Join-Path $LibPath 'GraphClient.psm1') -Force
-    if ($AccessToken) { Set-GraphAccessToken -Token $AccessToken }
+    if (-not $AccessToken) { throw 'AccessToken is required' }
 
-    # Read JSON from temp file (avoids PS 5.1 command-line argument mangling of { } : " chars)
-    if (-not $BodyJsonPath -or -not (Test-Path $BodyJsonPath)) {
-        throw "BodyJsonPath not provided or file not found: $BodyJsonPath"
+    # Resolve JSON: prefer inline $BodyJson; fall back to reading from file path
+    $json = if ($BodyJson) {
+        $BodyJson
+    } elseif ($BodyJsonPath -and (Test-Path $BodyJsonPath)) {
+        [System.IO.File]::ReadAllText($BodyJsonPath, [System.Text.Encoding]::UTF8)
+    } else {
+        throw 'Either -BodyJson or a valid -BodyJsonPath is required'
     }
-    $BodyJson = [System.IO.File]::ReadAllText($BodyJsonPath, [System.Text.Encoding]::UTF8)
 
-    $parsed = $BodyJson | ConvertFrom-Json
+    $parsed = $json | ConvertFrom-Json
     Write-Log "Creating Intune Win32 app: $($parsed.displayName)"
 
-    # Post the JSON directly via HttpWebRequest to bypass ConvertTo-Hashtable / ConvertTo-Json
-    # round-trip issues in PS 5.1 (single-element arrays become objects, @odata keys lost, etc.)
-    $token = if ($AccessToken) { $AccessToken } else { Get-ValidAccessToken }
+    $headers = @{
+        Authorization  = "Bearer $AccessToken"
+        'Content-Type' = 'application/json'
+    }
+
+    # Pass the raw JSON string directly — avoids any round-trip issues with
+    # @odata.type keys, single-element arrays, or special characters.
     $uri = 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps'
-    $req = [System.Net.HttpWebRequest]::Create($uri)
-    $req.Method = 'POST'
-    $req.ContentType = 'application/json'
-    $req.Accept = 'application/json'
-    $req.Headers.Add('Authorization', "Bearer $token")
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($BodyJson)
-    $req.ContentLength = $bytes.Length
-    $stream = $req.GetRequestStream()
-    $stream.Write($bytes, 0, $bytes.Length)
-    $stream.Close()
+    $response = Invoke-RestMethod -Method POST -Uri $uri -Headers $headers -Body $json
 
-    $resp = $req.GetResponse()
-    $reader = [System.IO.StreamReader]::new($resp.GetResponseStream())
-    $responseBody = $reader.ReadToEnd()
-    $reader.Close()
-
-    $appId = ($responseBody | ConvertFrom-Json).id
+    $appId = [string]$response.id
     Write-Log "App created: $appId"
     Write-Output "RESULT:$(ConvertTo-Json @{ success = $true; appId = $appId } -Compress)"
-} catch [System.Net.WebException] {
+} catch {
     $detail = $_.Exception.Message
     try {
-        $er = $_.Exception.Response
-        if ($er) {
-            $reader2 = [System.IO.StreamReader]::new($er.GetResponseStream())
-            $detail = $reader2.ReadToEnd()
-            $reader2.Close()
+        # Extract API error body if available
+        $errResponse = $_.Exception.Response
+        if ($errResponse) {
+            $stream = $errResponse.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($stream)
+            $detail = $reader.ReadToEnd()
+            $reader.Close()
         }
-    } catch {}
+    } catch { }
     Write-Log "Failed to create app: $detail" 'ERROR'
     Write-Output "RESULT:$(ConvertTo-Json @{ success = $false; error = $detail } -Compress)"
-} catch {
-    Write-Log "Failed to create app: $($_.Exception.Message)" 'ERROR'
-    Write-Output "RESULT:$(ConvertTo-Json @{ success = $false; error = $_.Exception.Message } -Compress)"
 }

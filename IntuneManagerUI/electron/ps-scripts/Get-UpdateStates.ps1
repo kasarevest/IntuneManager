@@ -1,41 +1,37 @@
-#Requires -Version 5.1
+#Requires -Version 7.0
 param([string]$AccessToken = '')
 $OutputEncoding = [System.Text.Encoding]::UTF8
-
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
+function Write-Log([string]$Message, [string]$Level = 'INFO') {
+    Write-Output "LOG:[$Level] $Message"
+}
+
 try {
-    $LibPath = Join-Path $PSScriptRoot '..\..\..\IntuneManager\Lib'
-    Import-Module (Join-Path $LibPath 'Logger.psm1') -Force
-    Import-Module (Join-Path $LibPath 'Auth.psm1') -Force
-    Import-Module (Join-Path $LibPath 'GraphClient.psm1') -Force
-    if ($AccessToken) { Set-GraphAccessToken -Token $AccessToken }
+    if (-not $AccessToken) { throw 'AccessToken is required' }
 
-    Write-AppLog 'Fetching Windows Update states from Intune (beta)...'
+    Write-Log 'Fetching Windows Update states from Intune (beta)...'
 
+    $headers = @{ Authorization = "Bearer $AccessToken" }
     $uri = 'https://graph.microsoft.com/beta/deviceManagement/windowsUpdateStates' +
            '?$select=deviceId,deviceDisplayName,osVersion,featureUpdateVersion,status&$top=999'
 
     $allStates = [System.Collections.Generic.List[object]]::new()
     $nextUri = $uri
     while ($nextUri) {
-        $response = Invoke-GraphRequest -Method GET -Uri $nextUri
+        $response = Invoke-RestMethod -Method GET -Uri $nextUri -Headers $headers
         if ($response.value) { $allStates.AddRange([object[]]$response.value) }
-        $nextUri = if ($response.PSObject.Properties['@odata.nextLink']) { $response.'@odata.nextLink' } else { $null }
+        $nextUri = $response.'@odata.nextLink'
     }
 
-    Write-AppLog "Retrieved $($allStates.Count) Windows Update state record(s)"
+    Write-Log "Retrieved $($allStates.Count) Windows Update state record(s)"
 
-    # Build summary counts by status
-    $notStarted = 0
-    $pending    = 0
-    $inProgress = 0
-    $completed  = 0
-    $failed     = 0
+    $notStarted = 0; $pending = 0; $inProgress = 0; $completed = 0; $failed = 0
 
     $stateList = $allStates | ForEach-Object {
         $s = $_
-        $status = if ($s.PSObject.Properties['status']) { [string]$s.status } else { 'unknown' }
+        $status = [string]($s.status ?? 'unknown')
 
         switch ($status) {
             'notStarted'  { $notStarted++ }
@@ -46,10 +42,10 @@ try {
         }
 
         @{
-            deviceId             = if ($s.PSObject.Properties['deviceId'])             { [string]$s.deviceId }             else { '' }
-            deviceName           = if ($s.PSObject.Properties['deviceDisplayName'])    { [string]$s.deviceDisplayName }    else { '' }
-            osVersion            = if ($s.PSObject.Properties['osVersion'])            { [string]$s.osVersion }            else { '' }
-            featureUpdateVersion = if ($s.PSObject.Properties['featureUpdateVersion']) { [string]$s.featureUpdateVersion } else { '' }
+            deviceId             = [string]($s.deviceId ?? '')
+            deviceName           = [string]($s.deviceDisplayName ?? '')
+            osVersion            = [string]($s.osVersion ?? '')
+            featureUpdateVersion = [string]($s.featureUpdateVersion ?? '')
             status               = $status
         }
     }
