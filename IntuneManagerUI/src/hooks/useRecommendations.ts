@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { ipcAiGetRecommendations } from '../lib/api'
+import { onRecommendationsUpdated } from '../lib/sse'
 import type { AppRecommendation } from '../types/ipc'
 
 // Module-level in-memory cache — survives page remounts within the same session.
@@ -54,22 +55,19 @@ export function useRecommendations(): RecommendationsState {
   useEffect(() => {
     mountedRef.current = true
 
-    // Subscribe to background refresh completions pushed from the main process
-    const api = (window as unknown as { electronAPI: { on: (channel: string, cb: (data: unknown) => void) => () => void } }).electronAPI
-    const unsubscribe = api.on(
-      'ipc:ai:recommendations-updated',
-      (data: unknown) => {
-        if (!mountedRef.current) return
-        const payload = data as { recommendations: AppRecommendation[] | null; error?: string }
-        if (Array.isArray(payload?.recommendations) && payload.recommendations.length > 0) {
-          sessionCache = payload.recommendations
-          setRecommendations(payload.recommendations)
-        } else if (payload?.error) {
-          setError(payload.error)
-        }
-        setRefreshing(false)
+    // Subscribe to background refresh completions via SSE (server broadcasts 'recommendations-updated').
+    // Previously used window.electronAPI.on() which is only available in Electron desktop.
+    const unsubscribe = onRecommendationsUpdated((data) => {
+      if (!mountedRef.current) return
+      const payload = data as { recommendations: AppRecommendation[] | null; error?: string }
+      if (Array.isArray(payload?.recommendations) && payload.recommendations.length > 0) {
+        sessionCache = payload.recommendations
+        setRecommendations(payload.recommendations)
+      } else if (payload?.error) {
+        setError(payload.error)
       }
-    )
+      setRefreshing(false)
+    })
 
     // Use session cache if available; otherwise fetch (which will hit DB cache or Claude)
     if (sessionCache === null) {

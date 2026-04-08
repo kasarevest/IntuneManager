@@ -62,9 +62,10 @@ COPY --from=server-builder /build/server/node_modules/ ./server/node_modules/
 COPY --from=server-builder /build/server/prisma/       ./server/prisma/
 COPY --from=server-builder /build/server/package.json  ./server/package.json
 
-# Copy PS bridge scripts directly from build context (build context = IntuneManagerUI/)
-# electron/ps-scripts/ is at IntuneManagerUI/electron/ps-scripts/ in the repo
-COPY electron/ps-scripts/ ./electron/ps-scripts/
+# Copy PS bridge scripts into the compiled server tree so __dirname resolution works.
+# ps-bridge.ts compiles to dist/services/ps-bridge.js → __dirname = /app/server/dist/services
+# path.join(__dirname, '..', 'electron', 'ps-scripts') → /app/server/dist/electron/ps-scripts
+COPY electron/ps-scripts/ ./server/dist/electron/ps-scripts/
 
 # Copy React SPA (served as static files by Express in production)
 COPY --from=spa-builder /build/builds/dist-web/ ./builds/dist-web/
