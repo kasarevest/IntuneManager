@@ -10,6 +10,7 @@ import { decrypt } from '../services/encryption'
 import { runPsScript } from '../services/ps-bridge'
 import { sseManager } from '../sse'
 import prisma from '../db'
+import { getAccessToken, GraphAuthError } from '../services/graph-auth'
 
 const router = Router()
 
@@ -21,27 +22,28 @@ interface ClientBundle {
 }
 
 async function createClient(): Promise<ClientBundle> {
+  // Direct API key takes priority — allows container deployments to use
+  // ANTHROPIC_API_KEY env var even when Bedrock settings exist in the DB.
+  const apiKeyRow = await prisma.appSetting.findUnique({ where: { key: 'claude_api_key_encrypted' } })
+  const apiKey = apiKeyRow ? decrypt(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
+
+  if (apiKey) {
+    return { client: new Anthropic({ apiKey }), model: 'claude-sonnet-4-6' }
+  }
+
+  // Fall back to Bedrock only when no direct API key is available
   const getRow = async (key: string) => {
     const row = await prisma.appSetting.findUnique({ where: { key } })
     return row?.value ?? ''
   }
-
   const awsRegion = await getRow('aws_region')
   const bedrockModelId = await getRow('aws_bedrock_model_id')
 
   if (awsRegion && bedrockModelId) {
-    return {
-      client: new AnthropicBedrock({ awsRegion }),
-      model: bedrockModelId,
-    }
+    return { client: new AnthropicBedrock({ awsRegion }), model: bedrockModelId }
   }
 
-  const apiKeyRow = await prisma.appSetting.findUnique({ where: { key: 'claude_api_key_encrypted' } })
-  const apiKey = apiKeyRow ? decrypt(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
-  return {
-    client: new Anthropic({ apiKey }),
-    model: 'claude-sonnet-4-6',
-  }
+  return { client: new Anthropic({ apiKey: '' }), model: 'claude-sonnet-4-6' }
 }
 
 async function assertClientConfigured(): Promise<ClientBundle> {
@@ -49,6 +51,14 @@ async function assertClientConfigured(): Promise<ClientBundle> {
     const row = await prisma.appSetting.findUnique({ where: { key } })
     return row?.value ?? ''
   }
+
+  // Check direct API key first
+  const apiKeyRow = await prisma.appSetting.findUnique({ where: { key: 'claude_api_key_encrypted' } })
+  const apiKey = apiKeyRow ? decrypt(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
+
+  if (apiKey) return createClient()
+
+  // No API key — check Bedrock
   const awsRegion = await getRow('aws_region')
   const bedrockModelId = await getRow('aws_bedrock_model_id')
 
@@ -56,14 +66,11 @@ async function assertClientConfigured(): Promise<ClientBundle> {
     throw new Error('Bedrock Model ID is required. Go to Settings → General and enter the Bedrock Model ID (e.g. anthropic.claude-3-5-sonnet-20241022-v2:0).')
   }
 
-  if (!awsRegion) {
-    const apiKeyRow = await prisma.appSetting.findUnique({ where: { key: 'claude_api_key_encrypted' } })
-    const apiKey = apiKeyRow ? decrypt(apiKeyRow.value) : process.env.ANTHROPIC_API_KEY ?? ''
-    if (!apiKey) {
-      throw new Error('No Claude connection configured. Go to Settings → General and configure AWS Bedrock (SSO) or an Anthropic API key.')
-    }
+  if (awsRegion && bedrockModelId) {
+    return createClient()
   }
-  return createClient()
+
+  throw new Error('No Claude connection configured. Go to Settings → General and add an Anthropic API key, or configure AWS Bedrock.')
 }
 
 interface ActiveJob {
@@ -444,11 +451,15 @@ async function executeToolCall(
           scriptContent: input.detect_script_content_base64
         }]
       })
+      let accessToken: string
+      try { accessToken = await getAccessToken() } catch (e) {
+        throw new Error(`Cannot create Intune app: ${(e as Error).message}`)
+      }
       const tmpJsonPath = path.join(os.tmpdir(), `intune-body-${Date.now()}.json`)
       fs.writeFileSync(tmpJsonPath, bodyJson, 'utf8')
       let result: Awaited<ReturnType<typeof runPsScript>>
       try {
-        result = await runPsScript('New-Win32App.ps1', ['-BodyJsonPath', tmpJsonPath],
+        result = await runPsScript('New-Win32App.ps1', ['-BodyJsonPath', tmpJsonPath, '-AccessToken', accessToken],
           (msg, level) => log(msg, level, 'ps'))
       } finally {
         try { fs.unlinkSync(tmpJsonPath) } catch { /* ignore */ }
@@ -457,8 +468,12 @@ async function executeToolCall(
     }
 
     case 'upload_to_intune': {
+      let accessToken: string
+      try { accessToken = await getAccessToken() } catch (e) {
+        throw new Error(`Cannot upload to Intune: ${(e as Error).message}`)
+      }
       const result = await runPsScript('Upload-App.ps1',
-        ['-AppId', String(input.app_id), '-IntunewinPath', String(input.intunewin_path)],
+        ['-AppId', String(input.app_id), '-IntunewinPath', String(input.intunewin_path), '-AccessToken', accessToken],
         (msg, level) => log(msg, level, 'ps'))
       return result.result ?? { success: false, error: 'Upload failed' }
     }
