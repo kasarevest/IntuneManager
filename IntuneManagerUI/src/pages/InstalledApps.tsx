@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useTenant } from '../contexts/TenantContext'
 import { useAppCatalog } from '../hooks/useAppCatalog'
 import type { AppRow } from '../types/app'
+import type { WtUpdateItem } from '../types/ipc'
+import { ipcPsGetWtUpdates, ipcPsWtUpdateApp, ipcSettingsGet } from '../lib/api'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -171,12 +173,66 @@ export default function InstalledApps() {
   const [selectedApp, setSelectedApp] = useState<AppRow | null>(null)
   const hasSynced = useRef(false)
 
+  // WinTuner updates
+  const [wtUpdates, setWtUpdates] = useState<WtUpdateItem[]>([])
+  const [wtLoading, setWtLoading] = useState(false)
+  const [wtError, setWtError] = useState<string | null>(null)
+  const [wtUpdatingId, setWtUpdatingId] = useState<string | null>(null)
+  const [outputFolder, setOutputFolder] = useState('')
+
   useEffect(() => {
     if (!hasSynced.current) {
       hasSynced.current = true
       sync()
     }
   }, [sync])
+
+  useEffect(() => {
+    loadWtUpdates()
+    ipcSettingsGet().then(s => setOutputFolder(s.outputFolderPath ?? ''))
+  }, [])
+
+  const loadWtUpdates = async () => {
+    setWtLoading(true)
+    setWtError(null)
+    try {
+      const res = await ipcPsGetWtUpdates()
+      if (res.success) {
+        setWtUpdates(res.updates ?? [])
+      } else {
+        setWtError(res.error ?? 'Failed to check WinTuner updates')
+      }
+    } catch (e) {
+      setWtError((e as Error).message)
+    } finally {
+      setWtLoading(false)
+    }
+  }
+
+  const handleWtUpdate = async (item: WtUpdateItem) => {
+    setWtUpdatingId(item.graphId)
+    setWtError(null)
+    const pkgFolder = `${outputFolder || '/tmp/wintuner-packages'}/wt-updates/${item.packageId.replace(/\./g, '-')}`
+    try {
+      const res = await ipcPsWtUpdateApp({ packageId: item.packageId, graphId: item.graphId, packageFolder: pkgFolder })
+      if (res.success) {
+        setWtUpdates(prev => prev.filter(u => u.graphId !== item.graphId))
+      } else {
+        setWtError(res.error ?? 'Update failed')
+      }
+    } catch (e) {
+      setWtError((e as Error).message)
+    } finally {
+      setWtUpdatingId(null)
+    }
+  }
+
+  const handleWtUpdateAll = async () => {
+    if (wtUpdatingId) return
+    for (const item of [...wtUpdates]) {
+      await handleWtUpdate(item)
+    }
+  }
 
   const filtered = apps.filter(app => {
     const matchSearch = app.displayName.toLowerCase().includes(search.toLowerCase())
@@ -289,6 +345,58 @@ export default function InstalledApps() {
             <div className="card" style={{ border: '1px solid var(--error)', padding: '10px 16px' }}>
               <span style={{ color: 'var(--error)', fontSize: 13 }}>✕ {error}</span>
               <button className="btn-ghost" style={{ fontSize: 12, marginLeft: 12 }} onClick={() => sync()}>Retry</button>
+            </div>
+          )}
+
+          {/* WinTuner updates panel */}
+          {(wtLoading || wtUpdates.length > 0 || wtError) && (
+            <div className="card" style={{ border: '1px solid rgba(234,179,8,0.4)', background: 'rgba(234,179,8,0.04)', padding: '12px 16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: wtUpdates.length > 0 ? 10 : 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ color: 'var(--warning)', fontSize: 15 }}>⟳</span>
+                  <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--warning)' }}>
+                    {wtLoading
+                      ? 'Checking WinTuner updates...'
+                      : wtError
+                        ? 'WinTuner check failed'
+                        : `WinTuner Updates Available (${wtUpdates.length})`}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {!wtLoading && (
+                    <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }} onClick={loadWtUpdates}>
+                      ↺ Refresh
+                    </button>
+                  )}
+                  {wtUpdates.length > 1 && !wtUpdatingId && (
+                    <button className="btn-primary" style={{ fontSize: 11, padding: '3px 10px' }} onClick={handleWtUpdateAll}>
+                      Update All
+                    </button>
+                  )}
+                </div>
+              </div>
+              {wtError && (
+                <p style={{ fontSize: 12, color: 'var(--error)', margin: 0 }}>{wtError}</p>
+              )}
+              {wtUpdates.map(item => (
+                <div key={item.graphId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderTop: '1px solid var(--border)' }}>
+                  <div>
+                    <span style={{ fontWeight: 500, fontSize: 13 }}>{item.name}</span>
+                    <span style={{ fontSize: 12, color: 'var(--text-400)', marginLeft: 10 }}>
+                      v{item.currentVersion} →{' '}
+                      <span style={{ color: 'var(--warning)', fontWeight: 600 }}>v{item.latestVersion}</span>
+                    </span>
+                  </div>
+                  <button
+                    className="btn-primary"
+                    style={{ fontSize: 11, padding: '4px 10px' }}
+                    disabled={!!wtUpdatingId}
+                    onClick={() => handleWtUpdate(item)}
+                  >
+                    {wtUpdatingId === item.graphId ? '↻ Updating...' : 'Update'}
+                  </button>
+                </div>
+              ))}
             </div>
           )}
 

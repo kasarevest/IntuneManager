@@ -27,7 +27,11 @@ import type {
   AppInstallStatsRes,
   UpdateStatesRes,
   UEAScoresRes,
-  AutopilotEventsRes
+  AutopilotEventsRes,
+  WtUpdatesRes,
+  WtPackageReq, WtPackageRes,
+  WtDeployReq, WtDeployRes,
+  WtUpdateAppReq, WtUpdateAppRes
 } from '../types/ipc'
 
 export interface SettingsGetRes {
@@ -198,3 +202,17 @@ export const ipcPsGetAutopilotEvents = (): Promise<AutopilotEventsRes> =>
 
 export const ipcAwsSsoLogin = (profile?: string): Promise<AwsSsoLoginRes> =>
   post('/api/aws/sso-login', { profile })
+
+// ─── WinTuner ─────────────────────────────────────────────────────────────────
+
+export const ipcPsGetWtUpdates = (): Promise<WtUpdatesRes> =>
+  get('/api/ps/wt-updates')
+
+export const ipcPsWtPackage = (req: WtPackageReq): Promise<WtPackageRes> =>
+  post('/api/ps/wt-package', req)
+
+export const ipcPsWtDeploy = (req: WtDeployReq): Promise<WtDeployRes> =>
+  post('/api/ps/wt-deploy', req)
+
+export const ipcPsWtUpdateApp = (req: WtUpdateAppReq): Promise<WtUpdateAppRes> =>
+  post('/api/ps/wt-update-app', req)

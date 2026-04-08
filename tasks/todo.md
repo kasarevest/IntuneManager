@@ -357,6 +357,38 @@ Execution order: 4a ─┐
 
 ---
 
+# Task: WinTuner UI Integration — COMPLETE
+
+## Objective
+Wire 4 new WinTuner server endpoints to the React UI:
+1. **InstalledApps** — "WinTuner Updates Available (N)" banner with inline per-app Update/Update All
+2. **AppCatalog** — Replace direct navigate with deploy modal: assignment picker + Quick Deploy (WinTuner) + AI Deploy
+3. **Deploy** — Handle `?wtDeploy=WINGET_ID&assignment=VALUE` URL param via `startWtDeployJob()`
+
+## Checklist
+- [x] `src/types/ipc.ts` — WtUpdateItem, WtUpdatesRes, WtPackage/Deploy/UpdateApp Req+Res types
+- [x] `src/lib/api.ts` — ipcPsGetWtUpdates, ipcPsWtPackage, ipcPsWtDeploy, ipcPsWtUpdateApp
+- [x] `InstalledApps.tsx` — WinTuner updates panel (yellow border, per-app rows, Update All)
+- [x] `AppCatalog.tsx` — Deploy modal with assignment select + Quick Deploy + AI Deploy paths
+- [x] `Deploy.tsx` — startWtDeployJob() with onJobLog SSE streaming, phase transitions, wtMode flag
+- [x] Peer review — 2 BLOCKING issues identified and fixed:
+  - Cancel button hidden for WinTuner jobs (AI cancel endpoint incompatible with PS-level jobIds)
+  - handleWtUpdateAll race guard (if(wtUpdatingId) return)
+
+## Side-Effect Audit
+1. AppCatalog: `handleCardDeploy` now opens a modal instead of navigating directly — users who expect immediate navigate on click will see one extra modal step
+2. InstalledApps: two extra API calls on mount (ipcPsGetWtUpdates + ipcSettingsGet) — minor latency; non-blocking; fail silently with error state
+3. Deploy: `?wtDeploy` check added before `?package` — no conflict; disjoint params; no existing caller uses wtDeploy
+
+## Post-Flight
+- Peer review subagent ran; 2 real issues fixed (cancel button, race guard)
+- Reviewed issues dismissed: HTTP blocking is async/non-blocking in JS; path separator is server-side Linux only; `/tmp` fallback is Linux container only; existing `handleUpdateApp` route still works via `?name=` param
+- Files changed: 5 (types, api, InstalledApps, AppCatalog, Deploy)
+
+---
+
+---
+
 # Archived: Task — PowerShell + WPF Desktop Application (COMPLETE)
 
 > See git history for original todo.md content. All checklist items completed, peer review PASS, post-flight written.

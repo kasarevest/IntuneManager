@@ -19,6 +19,10 @@ export default function AppCatalog() {
   const [searching, setSearching] = useState(false)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Deploy modal
+  const [deployTarget, setDeployTarget] = useState<AppRecommendation | null>(null)
+  const [deployAssignment, setDeployAssignment] = useState('None')
+
   // Cleanup debounce timeout on unmount
   useEffect(() => {
     return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current) }
@@ -60,11 +64,11 @@ export default function AppCatalog() {
     }
   }
 
-  // ─── Deploy action — navigates to Deployment page ───────────────────────────
+  // ─── Deploy action — opens assignment modal ──────────────────────────────────
 
   const handleCardDeploy = (app: AppRecommendation) => {
-    const request = `Package and prepare for Intune: ${app.name}${app.wingetId ? ` (winget ID: ${app.wingetId})` : ''} by ${app.publisher}. Latest stable version.`
-    navigate(`/deploy?package=${encodeURIComponent(request)}`)
+    setDeployTarget(app)
+    setDeployAssignment('None')
   }
 
   // ─── Render ─────────────────────────────────────────────────────────────────
@@ -223,6 +227,62 @@ export default function AppCatalog() {
 
         </div>
       </div>
+
+      {/* Deploy modal */}
+      {deployTarget && (
+        <div style={deployModalStyles.backdrop} onClick={() => setDeployTarget(null)}>
+          <div style={deployModalStyles.modal} onClick={e => e.stopPropagation()}>
+            <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>Deploy App</h2>
+            <p style={{ color: 'var(--text-400)', fontSize: 13, margin: '0 0 20px' }}>
+              {deployTarget.name} · {deployTarget.publisher}
+            </p>
+
+            <label style={{ fontSize: 12, color: 'var(--text-400)', display: 'block', marginBottom: 6 }}>
+              Assignment target
+            </label>
+            <select
+              value={deployAssignment}
+              onChange={e => setDeployAssignment(e.target.value)}
+              style={{ width: '100%', marginBottom: 20 }}
+            >
+              <option value="None">No assignment (deploy without target)</option>
+              <option value="AllUsers">All Users</option>
+              <option value="AllDevices">All Devices</option>
+            </select>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {deployTarget.wingetId && (
+                <button
+                  className="btn-primary"
+                  style={{ fontSize: 13 }}
+                  onClick={() => {
+                    const app = deployTarget
+                    setDeployTarget(null)
+                    navigate(`/deploy?wtDeploy=${encodeURIComponent(app.wingetId!)}&assignment=${deployAssignment}&appName=${encodeURIComponent(app.name)}`)
+                  }}
+                >
+                  Quick Deploy via WinTuner
+                </button>
+              )}
+              <button
+                className="btn-secondary"
+                style={{ fontSize: 13 }}
+                onClick={() => {
+                  const app = deployTarget
+                  const request = `Package and prepare for Intune: ${app.name}${app.wingetId ? ` (winget ID: ${app.wingetId})` : ''} by ${app.publisher}. Latest stable version.`
+                  setDeployTarget(null)
+                  navigate(`/deploy?package=${encodeURIComponent(request)}`)
+                }}
+              >
+                AI Package + Deploy
+              </button>
+              <button className="btn-ghost" style={{ fontSize: 13 }} onClick={() => setDeployTarget(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -327,5 +387,25 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8,
     background: 'var(--surface-200)',
     animation: 'pulse 1.5s ease-in-out infinite',
+  },
+}
+
+const deployModalStyles: Record<string, React.CSSProperties> = {
+  backdrop: {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0,0,0,0.55)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  modal: {
+    background: 'var(--surface-100)',
+    border: '1px solid var(--border)',
+    borderRadius: 10,
+    padding: 24,
+    width: 380,
+    maxWidth: '90vw',
   },
 }

@@ -5,7 +5,7 @@ import LogPanel from '../components/LogPanel'
 import ProgressStepper from '../components/ProgressStepper'
 import type { LogEntry, DeployJob } from '../types/app'
 import type { IntunewinPackage } from '../types/ipc'
-import { ipcAiPackageOnly, ipcAiUploadOnly, ipcAiCancel, ipcPsListIntunewinPackages } from '../lib/api'
+import { ipcAiPackageOnly, ipcAiUploadOnly, ipcAiCancel, ipcPsListIntunewinPackages, ipcPsWtPackage, ipcPsWtDeploy, ipcSettingsGet } from '../lib/api'
 import { onJobLog, onJobPhaseChange, onJobComplete, onJobError, onJobPackageComplete } from '../lib/sse'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -24,6 +24,7 @@ type JobMode = 'package' | 'deploy'
 interface ActiveJob extends DeployJob {
   mode: JobMode
   intunewinPath?: string | null
+  wtMode?: boolean   // true = WinTuner job; cancel via AI endpoint won't work
 }
 
 interface UpdateQueueItem {
@@ -81,11 +82,17 @@ export default function Deploy() {
   // On mount: read URL params and auto-start job(s)
   useEffect(() => {
     const packageParam = searchParams.get('package')
+    const wtDeployParam = searchParams.get('wtDeploy')
     const singleName = searchParams.get('name')
     const singleWingetId = searchParams.get('wingetId')
     const updateAllRaw = searchParams.get('updateAll')
 
-    if (packageParam) {
+    if (wtDeployParam) {
+      const assignment = searchParams.get('assignment') ?? 'None'
+      const appName = searchParams.get('appName') ?? ''
+      setSearchParams({}, { replace: true })
+      startWtDeployJob(decodeURIComponent(wtDeployParam), assignment, appName)
+    } else if (packageParam) {
       // Came from App Catalog — start packaging job
       setSearchParams({}, { replace: true })
       startPackageJob(decodeURIComponent(packageParam))
@@ -113,7 +120,7 @@ export default function Deploy() {
       startPackageJob(req)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, []) // startPackageJob, startWtDeployJob are stable useCallback refs
 
   const loadPackages = async () => {
     setPackagesLoading(true)
@@ -249,6 +256,57 @@ export default function Deploy() {
         clearSubs()
       })
     )
+  }, [])
+
+  const startWtDeployJob = useCallback(async (wingetId: string, assignment: string, appName: string) => {
+    clearSubs()
+    setDeployPrompt(null)
+    packageResultRef.current = null
+
+    const settings = await ipcSettingsGet()
+    const outputFolder = settings.outputFolderPath ?? '/tmp/wintuner-packages'
+    const packageFolder = `${outputFolder}/wt/${wingetId.replace(/[^a-zA-Z0-9-]/g, '-')}`
+    const jobId = crypto.randomUUID()
+
+    setJob({
+      jobId,
+      phase: 'downloading',
+      phaseLabel: `Downloading ${appName || wingetId} via WinTuner...`,
+      logs: [],
+      status: 'running',
+      mode: 'package',
+      wtMode: true
+    })
+
+    unsubsRef.current.push(
+      onJobLog((data: LogEntry) => {
+        if (data.jobId !== jobId) return
+        setJob(prev => prev ? { ...prev, logs: [...prev.logs, data] } : prev)
+      })
+    )
+
+    try {
+      const pkgRes = await ipcPsWtPackage({ packageId: wingetId, packageFolder, jobId })
+      if (!pkgRes.success) {
+        setJob(prev => prev ? { ...prev, status: 'error', error: pkgRes.error ?? 'WinTuner packaging failed' } : prev)
+        clearSubs()
+        return
+      }
+
+      const deployFolder = pkgRes.packageFolder ?? packageFolder
+      setJob(prev => prev ? { ...prev, phase: 'uploading', phaseLabel: `Deploying to Intune (${assignment})...`, mode: 'deploy' as JobMode } : prev)
+
+      const deployRes = await ipcPsWtDeploy({ packageFolder: deployFolder, assignment, jobId })
+      clearSubs()
+      if (deployRes.success) {
+        setJob(prev => prev ? { ...prev, status: 'complete', phase: 'done', phaseLabel: 'WinTuner deployment complete!' } : prev)
+      } else {
+        setJob(prev => prev ? { ...prev, status: 'error', error: deployRes.error ?? 'WinTuner deployment failed' } : prev)
+      }
+    } catch (e) {
+      clearSubs()
+      setJob(prev => prev ? { ...prev, status: 'error', error: (e as Error).message } : prev)
+    }
   }, [])
 
   const handleCancel = async () => {
@@ -400,7 +458,7 @@ export default function Deploy() {
                     </span>
                   )}
                 </div>
-                {isRunning && (
+                {isRunning && !job?.wtMode && (
                   <button className="btn-danger" style={{ fontSize: 12 }} onClick={handleCancel}>
                     Cancel
                   </button>
