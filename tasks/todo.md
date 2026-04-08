@@ -306,87 +306,48 @@ Execution order: 4a ─┐
 
 ### Checklist
 
-#### Phase 4a — Prisma Migrations (CI-automated)
+#### Phase 4a — Prisma Migrations (CI-automated) ✓ COMPLETE
 
-- [ ] Create `IntuneManagerUI/server/scripts/migrate-bootstrap.mjs` — checks if `_prisma_migrations` table exists; if not, generates baseline migration SQL via `prisma migrate diff --from-empty` and marks it applied with `prisma migrate resolve --applied`; if exists, no-op
-- [ ] In `.github/workflows/deploy-container-app.yml`: replace the `prisma db push` step with:
-  ```yaml
-  - name: Apply database migrations
-    working-directory: IntuneManagerUI/server
-    env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-    run: |
-      node scripts/migrate-bootstrap.mjs
-      npx prisma migrate deploy
-  ```
-- [ ] Push to master → confirm CI green; log shows "No pending migrations" or "1 migration applied (baseline init)"
-- [ ] Verify app functions normally after deploy
+- [x] Create `IntuneManagerUI/server/scripts/migrate-bootstrap.mjs`
+- [x] Replace `prisma db push` step in CI with `prisma generate → migrate-bootstrap.mjs → prisma migrate deploy`
+- [x] Push to master → CI green; bootstrap generates baseline on first run, no-op on subsequent runs
+- [x] App functions normally after deploy
 
 **Files changed:** `server/scripts/migrate-bootstrap.mjs` (new) · `.github/workflows/deploy-container-app.yml`
 
 ---
 
-#### Phase 4b — Key Vault Secret References
+#### Phase 4b — Key Vault Secret References ✓ COMPLETE
 
-- [ ] Confirm MI resource ID: `az containerapp show -n ca-intunemanager-prod -g rg-intunemanager-prod --query identity`
-- [ ] Confirm MI has `Key Vault Secrets User` on `kv-intunemgr-prod`: `az role assignment list --scope .../vaults/kv-intunemgr-prod`
-- [ ] Store 4 secrets in Key Vault (hyphens, not underscores in KV names):
-  - `DATABASE-URL` — from GitHub Secret `DATABASE_URL`
-  - `APP-SECRET-KEY` — from GitHub Secret `APP_SECRET_KEY` (**must be exact same value**)
-  - `AZURE-CLIENT-ID` — from GitHub Secret `AZURE_CLIENT_ID`
-  - `AZURE-CLIENT-SECRET` — from GitHub Secret `AZURE_CLIENT_SECRET`
-- [ ] Run `az containerapp secret set` with 4 `keyvaultref:` entries pointing at the MI
-- [ ] Run `az containerapp update --set-env-vars` mapping 4 env vars to `secretref:` names + `AZURE_REDIRECT_URI` as direct value
-- [ ] Trigger a new revision; verify health check passes; verify tenant still shows Connected
-- [ ] In `.github/workflows/deploy-container-app.yml`: remove the `--set-env-vars` block from the deploy step; add comment: `# Secrets managed via Key Vault references on the Container App — do not add --set-env-vars here`
-- [ ] Push to master → CI green; app functions; tenant Connected
-- [ ] Delete GitHub Secrets `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` (keep `DATABASE_URL` for migrate step; keep `AZURE_CREDENTIALS` for `azure/login`)
+- [x] MI detected (system-assigned) and `Key Vault Secrets User` RBAC assigned
+- [x] 4 secrets stored in `kv-intunemgr-prod`: `DATABASE-URL`, `APP-SECRET-KEY`, `AZURE-CLIENT-ID`, `AZURE-CLIENT-SECRET`
+- [x] `az containerapp secret set` with 4 `keyvaultref:` entries
+- [x] `az containerapp update` mapping 4 env vars to `secretref:` + `AZURE_REDIRECT_URI` plaintext
+- [x] Portal verified: 4 KV refs in Secrets, 4 secretref mappings in Env vars
+- [x] App loads and Settings > Tenant shows Connected after migration to KV refs
+- [x] `--set-env-vars` removed from CI deploy step (commit 0d30cd8)
+- [ ] Delete GitHub Secrets `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` (keep `DATABASE_URL` + `AZURE_CREDENTIALS`)
 
-**Files changed:** `.github/workflows/deploy-container-app.yml` (remove `--set-env-vars` from deploy step)
-**Azure CLI steps (manual / one-time):** `az keyvault secret set` ×4, `az containerapp secret set` ×1, `az containerapp update` ×1
+**Files changed:** `.github/workflows/deploy-container-app.yml` · `scripts/setup-keyvault-refs.ps1` (new — one-time setup script)
 
 ---
 
-#### Phase 4c — Native PS7 .intunewin Creation
+#### Phase 4c — Native PS7 .intunewin Creation ✓ DEPLOYED
 
-**Approach:** Implement the `.intunewin` packaging format in pure PowerShell 7 / .NET 8.0. The format is:
-1. ZIP the source folder → inner ZIP bytes
-2. AES-256-CBC encrypt the inner ZIP (random 256-bit key + 128-bit IV, PKCS7 padding)
-3. HMAC-SHA256 of the encrypted bytes (separate 256-bit MAC key)
-4. SHA256 of the *unencrypted* inner ZIP → `FileDigest`
-5. Write `Detection.xml` with all keys + digests
-6. Outer ZIP: `IntunePackage.intunewin` (encrypted bytes) + `metadata/Detection.xml`
-
-All operations use `System.Security.Cryptography` + `System.IO.Compression` — 100% cross-platform in .NET 8.0. No Windows-only APIs. `UploadManager.psm1` already validates this format on the decode side.
-
-- [ ] Create `IntuneManagerUI/electron/ps-scripts/Create-IntuneWin.ps1`:
-  - `#Requires -Version 7.0`
-  - `param([string]$SourceFolder, [string]$EntryPoint, [string]$OutputFolder)`
-  - Step 1: `[System.IO.Compression.ZipFile]::CreateFromDirectory($SourceFolder, $tempZip)`
-  - Step 2: `[System.Security.Cryptography.SHA256]::Create().ComputeHash($innerBytes)` → `$fileDigest`
-  - Step 3: `[System.Security.Cryptography.Aes]::Create()` with `KeySize=256`, `Mode=CBC`, `Padding=PKCS7`; `GenerateKey()`; `GenerateIV()`; `CreateEncryptor().TransformFinalBlock()`
-  - Step 4: `[System.Security.Cryptography.RandomNumberGenerator]::Fill($macKeyBytes)`; `[System.Security.Cryptography.HMACSHA256]::new($macKeyBytes).ComputeHash($encryptedBytes)` → `$mac`
-  - Step 5: Build `Detection.xml` string with all 7 required fields (`EncryptionKey`, `MacKey`, `InitializationVector`, `Mac`, `FileDigest`, `FileDigestAlgorithm="SHA256"`, `ProfileIdentifier="ProfileVersion1"`) + `UnencryptedContentSize`
-  - Step 6: Create outer ZIP via `[System.IO.Compression.ZipArchive]`; add entry `IntunePackage.intunewin` (NoCompression) with encrypted bytes; add entry `metadata/Detection.xml` with XML bytes
-  - Output: `$OutputFolder/<SourceFolderName>.intunewin`; `Write-Output "RESULT:..."` with `{ success, intunewinPath, sizeMB }`
-- [ ] Update `IntuneManagerUI/electron/ps-scripts/Build-Package.ps1`:
-  - After the "tool not found" check, add PS7 fallback **before** throwing: if `$PSVersionTable.PSVersion.Major -ge 7`, call `Create-IntuneWin.ps1` directly and exit
-  - Windows desktop with IntuneWinAppUtil.exe: unchanged behaviour
-  - Linux container (pwsh 7, no .exe): uses new script
-- [ ] Peer-review `Create-IntuneWin.ps1` before shipping
-- [ ] Push to master → CI/CD deploys
-- [ ] Test: trigger a packaging job from the web UI; verify `.intunewin` produced and upload completes
+- [x] Create `IntuneManagerUI/electron/ps-scripts/Create-IntuneWin.ps1` (pure PS7/.NET 8.0)
+- [x] Update `Build-Package.ps1`: PS7 fallback to `Create-IntuneWin.ps1` when exe not found
+- [x] Push to master → CI/CD deployed
+- [ ] **Test:** trigger packaging job from web UI → verify `.intunewin` produced → upload completes → app appears in Intune
 
 **Files changed:** `electron/ps-scripts/Create-IntuneWin.ps1` (new) · `electron/ps-scripts/Build-Package.ps1`
-**No new Azure resources. No new npm dependencies. No changes to `ai.ts`, `ps-bridge.ts`, or the Dockerfile.**
 
 ---
 
 ### Verification Criteria (Phase 4 — Definition of Done)
-- [ ] **4a:** `prisma migrate deploy` runs green in CI; "No pending migrations" after first baseline run; no data loss
-- [ ] **4b:** Container App env vars sourced from KV; no plaintext secrets in workflow; tenant Connected after deploy; login works
+- [x] **4a:** `prisma migrate deploy` runs green in CI; baseline registered; no data loss
+- [x] **4b:** Container App env vars sourced from KV; no plaintext secrets in workflow; tenant Connected
 - [ ] **4b:** GitHub Secrets `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` deleted
-- [ ] **4c:** Packaging job from web UI → `Create-IntuneWin.ps1` runs on Linux via pwsh → `.intunewin` produced → upload completes → app appears in Intune
+- [ ] **4c:** Packaging job from web UI → `Create-IntuneWin.ps1` runs on Linux → `.intunewin` produced → upload completes → app appears in Intune
 
 ---
 
