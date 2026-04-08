@@ -197,13 +197,28 @@ export default function Deploy() {
   }, [])
 
   const startUploadOnlyJob = useCallback(async (intunewinPath: string | null, packageSettings: Record<string, unknown> | null) => {
-    if (!intunewinPath || !packageSettings) return
+    if (!intunewinPath) {
+      setJob({ jobId: 'error', phase: 'uploading', phaseLabel: 'Deploy failed', logs: [], status: 'error', error: 'No .intunewin package path found. Package the app first.', mode: 'deploy' })
+      return
+    }
+    if (!packageSettings) {
+      setJob({ jobId: 'error', phase: 'uploading', phaseLabel: 'Deploy failed', logs: [], status: 'error', error: 'No PACKAGE_SETTINGS.md found for this package. Cannot determine app metadata.', mode: 'deploy' })
+      return
+    }
     clearSubs()
     setDeployPrompt(null)
     setDeploying(true)
 
-    const res = await ipcAiUploadOnly({ intunewinPath, packageSettings })
-    const jobId = res.jobId
+    let jobId: string
+    try {
+      const res = await ipcAiUploadOnly({ intunewinPath, packageSettings })
+      jobId = res.jobId
+      if (!jobId) throw new Error('Server did not return a job ID. Check that you are connected to the tenant.')
+    } catch (err) {
+      setDeploying(false)
+      setJob({ jobId: 'error', phase: 'uploading', phaseLabel: 'Deploy failed', logs: [], status: 'error', error: (err as Error).message, mode: 'deploy' })
+      return
+    }
 
     setJob(prev => prev
       ? { ...prev, jobId, phase: 'uploading', phaseLabel: 'Uploading to Intune...', status: 'running', mode: 'deploy' }
