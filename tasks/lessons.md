@@ -775,6 +775,42 @@ After implementing the above patterns with `@azure/msal-node`, every token excha
 
 ---
 
+## Lesson 013 — OAuth2 Missing openid Scope + Username-Based Connected Check (2026-04-08)
+
+### Keywords
+`oauth2`, `openid`, `profile`, `scopes`, `id_token`, `username`, `connected-check`, `graph-auth`, `azure-ad`, `tenant-auth`
+
+### What Happened
+
+After implementing the Phase 3 OAuth2 authorization code flow and completing Microsoft sign-in, the tenant integration page always showed "Not Connected" despite the tokens being saved to the database.
+
+Root cause: `openid` and `profile` were missing from the SCOPES constant in `graph-auth.ts`. Microsoft's OAuth2 token endpoint only returns an `id_token` when the `openid` scope is present. Without it, the token response contains only `access_token` and `refresh_token`. The `saveTokens()` function parsed claims from `id_token` to extract `preferred_username` — with no id_token, `username` was always `null`.
+
+The `GET /api/ps/tenant-config` route checked `if (!row || !row.username)` to determine connectivity. With `username = null`, it returned `{ isConnected: false }` even though valid tokens were stored.
+
+### Anti-Pattern (Why It Happened)
+
+**`openid` was assumed to be implicit.** The developer included `User.Read` (a Microsoft Graph scope) and assumed it would cause an id_token to be returned. It does not. `openid` is an OpenID Connect scope that must be explicitly requested — it is never implicit, even with Graph scopes.
+
+**Connected state was keyed on a derived field (`username`) rather than the actual indicator (`access_token`).** Username is parsed from the id_token as a convenience for display. Using it as the connected gate means any upstream claim omission silently breaks connectivity.
+
+### Heuristic (Prevention)
+
+1. **Always include `openid` (and `profile`) when building OAuth2 authorization code or device code flows that need user identity claims.** `User.Read` gives API access; `openid` + `profile` give the id_token with `preferred_username`, `name`, `tid`, etc.
+2. **Key the "connected" check on the access token, not a derived display field.** The presence of an encrypted `access_token` in the DB is the correct connectivity indicator. Username, tenantId, and expiry are display info only.
+3. **After any OAuth flow that should save tokens, add a log line in the callback route** confirming `saveTokens()` succeeded and what username was parsed — this makes the silent-failure mode visible immediately.
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---|---|
+| Required SCOPES for identity + Graph | `['openid', 'profile', 'User.Read', 'offline_access', ...graphScopes]` — always start with `openid` + `profile` for any flow that needs user identity |
+| Connected check | `!row.access_token` — not `!row.username`. Username is display-only. |
+| Scope for offline refresh | `offline_access` must be present to receive a `refresh_token` |
+| id_token username claim priority | `preferred_username` → `unique_name` → `upn` → null. All three are work-account claim variants across different AAD configurations. |
+
+---
+
 ## Lesson Template (copy for new entries)
 
 ```
