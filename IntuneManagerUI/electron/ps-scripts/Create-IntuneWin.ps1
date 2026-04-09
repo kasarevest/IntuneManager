@@ -1,30 +1,21 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Native PS7 / .NET 8.0 replacement for IntuneWinAppUtil.exe.
+    Creates a .intunewin package using SvRooij.ContentPrep (bundled with WinTuner).
 
 .DESCRIPTION
-    Implements the .intunewin packaging format using only cross-platform
-    .NET 8.0 APIs (System.IO.Compression, System.Security.Cryptography).
-    No Windows-specific APIs, no external tools required.
+    Delegates to SvRooij.ContentPrep.Packager — the same library used by WinTuner —
+    which guarantees the output format is accepted by Intune.
 
-    Format:
-      Outer ZIP
-        IntunePackage.intunewin  — AES-256-CBC encrypted inner ZIP (PKCS7)
-        metadata/Detection.xml  — encryption keys + file digest
-
-    Encryption:
-      - Inner ZIP: ZipFile.CreateFromDirectory(SourceFolder)
-      - SHA-256 of inner ZIP bytes                     → FileDigest
-      - AES-256-CBC, random key + IV, PKCS7 padding    → encrypted blob
-      - HMAC-SHA256 of encrypted blob, random MAC key  → Mac
-      - Random 256-bit MAC key
+    Output ZIP layout (produced by SvRooij.ContentPrep):
+      IntuneWinPackage/Contents/IntunePackage.intunewin  — AES-256-CBC encrypted inner ZIP
+      IntuneWinPackage/Metadata/Detection.xml            — encryption keys + file digest
 
 .PARAMETER SourceFolder
     Path to the folder containing the application files.
 
 .PARAMETER EntryPoint
-    Path to the setup file (e.g. setup.exe). Used only for metadata.
+    Full path to the setup file (e.g. /mnt/source/MyApp/setup.exe).
 
 .PARAMETER OutputFolder
     Folder where the .intunewin file will be written.
@@ -46,13 +37,6 @@ function Write-Log([string]$Message, [string]$Level = 'INFO') {
     Write-Output "LOG:[$Level] $Message"
 }
 
-# Load ZIP + crypto assemblies (already available in .NET 8 but explicit Add-Type is safe)
-Add-Type -AssemblyName 'System.IO.Compression'
-Add-Type -AssemblyName 'System.IO.Compression.FileSystem'
-Add-Type -AssemblyName 'System.Security.Cryptography.Algorithms' -ErrorAction SilentlyContinue
-
-$tempInnerZip = $null
-
 try {
     # ── Validate inputs ───────────────────────────────────────────────────────
     if (-not (Test-Path $SourceFolder -PathType Container)) {
@@ -65,142 +49,62 @@ try {
         New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
     }
 
-    $appName    = [System.IO.Path]::GetFileName($SourceFolder.TrimEnd('/\'))
-    $setupFile  = [System.IO.Path]::GetFileName($EntryPoint)
-    $outputName = "${appName}.intunewin"
-    $outputPath = [System.IO.Path]::Combine($OutputFolder, $outputName)
+    $appName   = [System.IO.Path]::GetFileName($SourceFolder.TrimEnd('/\'))
+    $setupFile = [System.IO.Path]::GetFileName($EntryPoint)
 
     Write-Log "Packaging: $appName"
     Write-Log "  Source:     $SourceFolder"
     Write-Log "  EntryPoint: $setupFile"
-    Write-Log "  Output:     $outputPath"
+    Write-Log "  Output:     $OutputFolder"
 
-    # ── Step 1: Create inner ZIP of source folder ─────────────────────────────
-    Write-Log "Step 1/5: Creating inner ZIP..."
-    $tempInnerZip = [System.IO.Path]::GetTempFileName() + '.zip'
-    [System.IO.Compression.ZipFile]::CreateFromDirectory(
+    # ── Load SvRooij.ContentPrep from the installed WinTuner module ───────────
+    $wtModule = Get-Module -ListAvailable WinTuner |
+        Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $wtModule) {
+        throw 'WinTuner module not found. Run: Install-Module WinTuner -Scope AllUsers'
+    }
+
+    $contentPrepDll = Join-Path $wtModule.ModuleBase 'SvRooij.ContentPrep.dll'
+    if (-not (Test-Path $contentPrepDll)) {
+        throw "SvRooij.ContentPrep.dll not found in WinTuner module at: $($wtModule.ModuleBase)"
+    }
+
+    Add-Type -Path $contentPrepDll
+
+    # ── Package using the official SvRooij.ContentPrep.Packager ──────────────
+    Write-Log "Calling SvRooij.ContentPrep.Packager (WinTuner $($wtModule.Version))..."
+
+    $details           = [SvRooij.ContentPrep.Models.ApplicationDetails]::new()
+    $details.Name      = $appName
+    $details.SetupFile = $setupFile
+
+    $packager = [SvRooij.ContentPrep.Packager]::new()
+    $packager.CreatePackage(
         $SourceFolder,
-        $tempInnerZip,
-        [System.IO.Compression.CompressionLevel]::Optimal,
-        $false   # includeBaseDirectory = false (ZIP contents, not the folder)
-    )
-    $innerBytes = [System.IO.File]::ReadAllBytes($tempInnerZip)
-    $unencryptedSize = $innerBytes.Length
-    Write-Log "  Inner ZIP size: $([Math]::Round($unencryptedSize / 1KB, 1)) KB"
+        $EntryPoint,
+        $OutputFolder,
+        $details,
+        [System.Threading.CancellationToken]::None
+    ).GetAwaiter().GetResult() | Out-Null
 
-    # ── Step 2: SHA-256 of inner ZIP bytes → FileDigest ───────────────────────
-    Write-Log "Step 2/5: Computing SHA-256 digest..."
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    $digestBytes = $sha256.ComputeHash($innerBytes)
-    $sha256.Dispose()
-    $fileDigestB64 = [System.Convert]::ToBase64String($digestBytes)
+    # ── Locate the output file ────────────────────────────────────────────────
+    $intunewinFile = Get-ChildItem -Path $OutputFolder -Filter '*.intunewin' -File |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
-    # ── Step 3: AES-256-CBC encrypt the inner ZIP ─────────────────────────────
-    Write-Log "Step 3/5: Encrypting with AES-256-CBC..."
-    $aes = [System.Security.Cryptography.Aes]::Create()
-    $aes.KeySize = 256
-    $aes.BlockSize = 128
-    $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
-    $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
-    $aes.GenerateKey()
-    $aes.GenerateIV()
+    if (-not $intunewinFile) {
+        throw '.intunewin file not produced in output folder'
+    }
 
-    $encKeyB64 = [System.Convert]::ToBase64String($aes.Key)
-    $ivB64     = [System.Convert]::ToBase64String($aes.IV)
-
-    $encryptor = $aes.CreateEncryptor()
-    $encMs     = [System.IO.MemoryStream]::new()
-    $cryptoStream = [System.Security.Cryptography.CryptoStream]::new(
-        $encMs,
-        $encryptor,
-        [System.Security.Cryptography.CryptoStreamMode]::Write
-    )
-    $cryptoStream.Write($innerBytes, 0, $innerBytes.Length)
-    $cryptoStream.FlushFinalBlock()
-    $encryptedBytes = $encMs.ToArray()
-    $cryptoStream.Dispose()
-    $encMs.Dispose()
-    $aes.Dispose()
-    Write-Log "  Encrypted size: $([Math]::Round($encryptedBytes.Length / 1KB, 1)) KB"
-
-    # ── Step 4: HMAC-SHA256 of encrypted bytes ────────────────────────────────
-    Write-Log "Step 4/5: Computing HMAC-SHA256..."
-    $macKeyBytes = [byte[]]::new(32)
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($macKeyBytes)
-    $hmac     = [System.Security.Cryptography.HMACSHA256]::new($macKeyBytes)
-    $macBytes = $hmac.ComputeHash($encryptedBytes)
-    $hmac.Dispose()
-    $macKeyB64 = [System.Convert]::ToBase64String($macKeyBytes)
-    $macB64    = [System.Convert]::ToBase64String($macBytes)
-
-    # ── Step 5: Build outer ZIP with encrypted blob + Detection.xml ───────────
-    Write-Log "Step 5/5: Building outer ZIP..."
-
-    $detectionXml = @"
-<?xml version="1.0" encoding="utf-8"?>
-<ApplicationInfo xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ToolVersion="1.0.0.0">
-  <EncryptionInfo>
-    <EncryptionKey>$encKeyB64</EncryptionKey>
-    <MacKey>$macKeyB64</MacKey>
-    <InitializationVector>$ivB64</InitializationVector>
-    <Mac>$macB64</Mac>
-    <MacAlgorithm>SHA256</MacAlgorithm>
-    <ProfileIdentifier>ProfileVersion1</ProfileIdentifier>
-    <FileDigest>$fileDigestB64</FileDigest>
-    <FileDigestAlgorithm>SHA256</FileDigestAlgorithm>
-  </EncryptionInfo>
-  <Name>$appName</Name>
-  <UnencryptedContentSize>$unencryptedSize</UnencryptedContentSize>
-  <FileName>$outputName</FileName>
-  <SetupFile>$setupFile</SetupFile>
-</ApplicationInfo>
-"@
-
-    $xmlBytes = [System.Text.Encoding]::UTF8.GetBytes($detectionXml)
-
-    # Write outer ZIP directly to the output file
-    if (Test-Path $outputPath) { Remove-Item $outputPath -Force }
-
-    $outerMs  = [System.IO.MemoryStream]::new()
-    $archive  = [System.IO.Compression.ZipArchive]::new(
-        $outerMs,
-        [System.IO.Compression.ZipArchiveMode]::Create,
-        $true   # leaveOpen = true so we can ToArray() after dispose
-    )
-
-    # Entry 1: encrypted blob at IntunePackage/<name>.intunewin
-    # Upload-App.ps1 reads <FileName> from Detection.xml and looks for
-    # IntunePackage/$encryptedFileName — path must match exactly.
-    $blobEntry   = $archive.CreateEntry("IntunePackage/$outputName", [System.IO.Compression.CompressionLevel]::NoCompression)
-    $blobStream  = $blobEntry.Open()
-    $blobStream.Write($encryptedBytes, 0, $encryptedBytes.Length)
-    $blobStream.Dispose()
-
-    # Entry 2: Detection.xml inside IntunePackage/ (Upload-App.ps1: GetEntry('IntunePackage/Detection.xml'))
-    $xmlEntry    = $archive.CreateEntry('IntunePackage/Detection.xml', [System.IO.Compression.CompressionLevel]::Optimal)
-    $xmlStream   = $xmlEntry.Open()
-    $xmlStream.Write($xmlBytes, 0, $xmlBytes.Length)
-    $xmlStream.Dispose()
-
-    $archive.Dispose()
-
-    [System.IO.File]::WriteAllBytes($outputPath, $outerMs.ToArray())
-    $outerMs.Dispose()
-
-    $sizeMB = [Math]::Round((Get-Item $outputPath).Length / 1MB, 2)
-    Write-Log "Package created: $outputPath ($sizeMB MB)"
+    $sizeMB = [Math]::Round($intunewinFile.Length / 1MB, 2)
+    Write-Log "Package created: $($intunewinFile.FullName) ($sizeMB MB)"
 
     Write-Output "RESULT:$(ConvertTo-Json @{
         success       = $true
-        intunewinPath = $outputPath
+        intunewinPath = $intunewinFile.FullName
         sizeMB        = $sizeMB
     } -Compress)"
 
 } catch {
     Write-Log "Packaging failed: $($_.Exception.Message)" 'ERROR'
     Write-Output "RESULT:$(ConvertTo-Json @{ success = $false; error = $_.Exception.Message } -Compress)"
-} finally {
-    if ($tempInnerZip -and (Test-Path $tempInnerZip)) {
-        Remove-Item $tempInnerZip -Force -ErrorAction SilentlyContinue
-    }
 }

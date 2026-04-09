@@ -24,12 +24,15 @@ try {
     }
 
     # ── 1. Parse Detection.xml from .intunewin ─────────────────────────────────
+    # SvRooij.ContentPrep (WinTuner) layout:
+    #   IntuneWinPackage/Metadata/Detection.xml
+    #   IntuneWinPackage/Contents/IntunePackage.intunewin
     Write-Log "Reading .intunewin metadata: $(Split-Path $IntunewinPath -Leaf)"
 
     $zip = [System.IO.Compression.ZipFile]::OpenRead($IntunewinPath)
     try {
-        $detectEntry = $zip.GetEntry('IntunePackage/Detection.xml')
-        if (-not $detectEntry) { throw 'Detection.xml not found in .intunewin' }
+        $detectEntry = $zip.GetEntry('IntuneWinPackage/Metadata/Detection.xml')
+        if (-not $detectEntry) { throw 'Detection.xml not found at IntuneWinPackage/Metadata/Detection.xml' }
 
         $reader = New-Object System.IO.StreamReader($detectEntry.Open())
         $detectXml = [xml]$reader.ReadToEnd()
@@ -40,8 +43,8 @@ try {
         $encryptedFileName = $appInfo.FileName
         $unencryptedSize   = [int64]$appInfo.UnencryptedContentSize
 
-        $innerEntry = $zip.GetEntry("IntunePackage/$encryptedFileName")
-        if (-not $innerEntry) { throw "Encrypted file not found: IntunePackage/$encryptedFileName" }
+        $innerEntry = $zip.GetEntry("IntuneWinPackage/Contents/$encryptedFileName")
+        if (-not $innerEntry) { throw "Encrypted file not found: IntuneWinPackage/Contents/$encryptedFileName" }
         $encryptedSize = $innerEntry.Length
     } finally {
         $zip.Dispose()
@@ -92,7 +95,7 @@ try {
 
     $outerZip = [System.IO.Compression.ZipFile]::OpenRead($IntunewinPath)
     try {
-        $innerEntry    = $outerZip.GetEntry("IntunePackage/$encryptedFileName")
+        $innerEntry    = $outerZip.GetEntry("IntuneWinPackage/Contents/$encryptedFileName")
         $contentStream = $innerEntry.Open()
         try {
             $buffer     = New-Object byte[] $chunkSize
