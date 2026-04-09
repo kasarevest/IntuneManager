@@ -295,7 +295,7 @@ const s: Record<string, React.CSSProperties> = {
   groupName: {
     flex: 1,
     fontSize: 13,
-    color: 'var(--text-100)',
+    color: '#ffffff',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
