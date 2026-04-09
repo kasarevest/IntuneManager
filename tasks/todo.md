@@ -402,6 +402,13 @@ Wire 4 new WinTuner server endpoints to the React UI:
 
 ---
 
+## Bug: Packaging — overwrite existing .intunewin in output folder
+- **Description:** If a `.intunewin` for the same app already exists in `/mnt/output`, the packager should overwrite it. Currently the old file may be left in place or the job may fail.
+- **Scope:** `Create-IntuneWin.ps1` — delete any existing `<appName>.intunewin` in `$OutputFolder` before calling `SvRooij.ContentPrep.Packager.CreatePackage`.
+- **Priority:** Medium
+
+---
+
 ## Bug: App Catalog search does not return results
 - **Component:** `IntuneManagerUI/src/pages/AppCatalog.tsx` — `runSearch()` → `ipcPsSearchWinget()`
 - **Symptom:** Typing in the search bar produces no results (search appears to run but returns nothing)
