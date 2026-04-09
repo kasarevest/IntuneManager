@@ -21,27 +21,28 @@ This index tracks all identified issues from the peer review and provides links 
 
 ## CRITICAL Issues
 
-### #001: AAD Group Assignment UI
+### #001: AAD Group Assignment UI ✅ COMPLETE
 **Priority:** CRITICAL (Workflow)  
 **Impact:** Apps deploy but aren't assigned to any users/devices. Manual portal work required after every deployment.  
 **Spec:** [issue-001-aad-group-assignment.md](issue-001-aad-group-assignment.md)
 
-**Summary:** Add post-deployment modal to assign apps to AAD groups via Graph API. Without this, admins must manually assign every app in the Intune portal, eliminating most of the time savings the tool provides.
+**Summary:** Post-deployment `AssignmentModal` added. Shows MRU + all AAD security groups with per-group intent toggle. Single `/assign` batch POST to Graph API. GroupAssignmentHistory Prisma model tracks recently-used groups. Triggered from Deploy.tsx after WinTuner deploy or upload-only job success.
 
-**Recommended Order:** Implement **FIRST** (highest user-facing value)
+**Completed:** 2026-04-09
 
 ---
 
 ## BLOCKING Issues
 
-### #002: PowerShell Script Timeouts
+### #002: PowerShell Script Timeouts ⚠️ PARTIAL
 **Priority:** BLOCKING (Technical)  
 **Impact:** Hung scripts leave jobs in "running" state indefinitely with no recovery path.  
 **Spec:** [issue-002-ps-script-timeouts.md](issue-002-ps-script-timeouts.md)
 
-**Summary:** Add timeout mechanism to `runPsScript()`. Default 120s, configurable per script type (300s for downloads, 60s for queries). Kill process on timeout and emit clear error.
+**Summary:** `server/services/ps-bridge.ts` — `timeoutMs` parameter added (default 60 000 ms), `killProc()` helper, `setTimeout` + `clearTimeout` on close/error. **Remaining:** `electron/ipc/ps-bridge.ts` still has no timeout mechanism.
 
-**Recommended Order:** Implement **SECOND** (prevents system hangs)
+**Recommended Order:** Implement **SECOND** (prevents system hangs)  
+**Partial completion:** 2026-04-09 (server-side only)
 
 ---
 
@@ -211,8 +212,8 @@ Nice-to-have UX improvements:
 
 Use this checklist to track implementation:
 
-- [ ] #001 AAD Group Assignment
-- [ ] #002 PS Script Timeouts
+- [x] #001 AAD Group Assignment — Complete 2026-04-09
+- [ ] #002 PS Script Timeouts — ⚠️ Partial (server-side done; electron-side pending)
 - [ ] #003 Claude Iteration Recovery
 - [ ] #004 Path Traversal Validation
 - [ ] #005 Deployment History

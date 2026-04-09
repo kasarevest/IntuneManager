@@ -811,6 +811,95 @@ The `GET /api/ps/tenant-config` route checked `if (!row || !row.username)` to de
 
 ---
 
+## Lesson 014 — AAD Group Assignment + Azure Proxy Patterns (2026-04-09)
+
+### Keywords
+`graph-api`, `aad-groups`, `assignment`, `503`, `envoy`, `timeout`, `promise-allsettled`, `global-css`, `width-auto`, `checkbox`, `select`, `flex-row`, `parse-json`, `scope`, `GroupMember.Read.All`, `assign-action`
+
+### What Happened
+
+Implemented Issue #001 (AAD Group Assignment). Hit six distinct bugs in sequence: 403 (missing scope), JSON parse crash (Envoy proxy plain-text response), two 503 upstream errors (no timeout on PS scripts), invisible group names (global CSS `width:100%` on checkbox), and empty recent groups (Promise.all rejection masking).
+
+### Anti-Patterns Encountered
+
+1. **Missing OAuth scope discovered at runtime** — `GroupMember.Read.All` was not in SCOPES; only fails when the endpoint is called, not at startup.
+2. **`.json()` on a non-JSON response** — Envoy proxy returns `"upstream connect error..."` as plain text. Calling `.json()` throws `SyntaxError: Unexpected token 'u'`. No indication from the HTTP status that the body isn't JSON.
+3. **N sequential Graph API calls with no timeout** — N POSTs to `/assignments` with no `-TimeoutSec`, each holding a TCP connection. Envoy proxy (60 s limit) kills the connection before the Nth call completes.
+4. **`Promise.all` masking partial results** — When groups fetch fails, `Promise.all` immediately rejects; recent groups result (fulfilled) is never applied.
+5. **Global CSS `width:100%` on checkbox in flex row** — `global.css` sets `width:100%` on ALL `input` elements. A checkbox in a flex row expands to fill the full row width, pushing all sibling elements (group name, badge, select) off-screen. The result is a row showing only the checkbox with nothing after it.
+
+### Heuristics (Prevention)
+
+1. **Every new Graph operation: add its scope to `graph-auth.ts` SCOPES and document in CLAUDE.md's deployment checklist.** Check the API docs for required delegated scopes before writing the route.
+
+2. **Never call `.json()` directly on responses from Express routes that call PS scripts.** Use the `parseJson<T>` helper in `api.ts` — it reads as text first, catches proxy errors gracefully.
+
+3. **Never add a Graph API route without a timeout.** Always set `runPsScript(..., timeoutMs)` shorter than the proxy timeout (~60 s). Always add `-TimeoutSec` to `Invoke-RestMethod` in the PS script (20 s for reads, 30 s for writes).
+
+4. **When loading from multiple independent sources where one can fail, use `Promise.allSettled`, not `Promise.all`.** `Promise.all` silently discards all fulfilled results the moment any source rejects.
+
+5. **Any `input`, `select`, or `textarea` inside a flex row MUST have `style={{ width: 'auto', flexShrink: 0 }}`** to override the global `width:100%` rule in `global.css`. Without it, the element fills the whole row. A checkbox has no visible text, so the rest of the row is invisible — the hardest variant of this bug to spot.
+
+6. **Use the `/assign` batch action for Intune app group assignments** — single POST with all assignments. N sequential individual POSTs will timeout on large group selections and are slower.
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---------|----------------|
+| Graph batch assignment | `POST /beta/deviceAppManagement/mobileApps/{appId}/assign` with `{ mobileAppAssignments: [...] }` |
+| Non-JSON response guard | `parseJson<T>` helper: `const text = await res.text(); try { return JSON.parse(text) } catch { throw new Error(text.slice(0, 120)) }` |
+| Flex row with checkbox/select | Always `style={{ width: 'auto', flexShrink: 0 }}` — overrides `global.css` `width:100%` |
+| Multiple independent data sources | `Promise.allSettled` — check each result's `.status === 'fulfilled'` independently |
+| MRU group tracking | `GroupAssignmentHistory` Prisma model; query via `groupBy` + `_count` + `orderBy` |
+| Per-route PS timeout override | Pass explicit `timeoutMs` (e.g. 20 000 for reads) as 6th arg to `runPsScript()` |
+
+---
+
+## Lesson 015 — Prisma Migration Gap: Bootstrap Is One-Time-Only (2026-04-09)
+
+### Keywords
+`prisma`, `migrate`, `migrate-bootstrap`, `migration-gap`, `schema-drift`, `createMany`, `table-not-found`, `azure-sql`, `try-catch`, `non-fatal`
+
+### What Happened
+
+Assignment feature worked in Intune but the app returned an error. The `group_assignment_history` table was defined in `schema.prisma` and `prisma.groupAssignmentHistory.createMany()` was called in a route handler, but the table did not exist in Azure SQL. `prisma migrate deploy` had nothing to run because no migration file was committed for the new model.
+
+Root cause: `migrate-bootstrap.mjs` generates a baseline migration (`0_init`) only when `_prisma_migrations` does not yet exist — a one-time operation. After that, it is a no-op. Any model added to `schema.prisma` after the first deploy requires an explicit migration SQL file committed to `server/prisma/migrations/`.
+
+The route handler had no try/catch around the `createMany` call. When Prisma threw "Invalid object name 'dbo.group_assignment_history'", Express returned a 500, making a successful Intune assignment appear to have failed.
+
+### Anti-Pattern (Why It Happened)
+
+**Assuming `prisma db push` semantics after switching to `prisma migrate`.** `prisma db push` always syncs the schema to the DB; `prisma migrate deploy` only runs committed migration files. After the switch to `prisma migrate`, any schema addition must be accompanied by a `migration.sql` file — no file means no table.
+
+**Non-critical DB write outside try/catch.** MRU history is a convenience feature — a failure to record it should never surface to the user.
+
+### Heuristic (Prevention)
+
+1. **After adding any Prisma model post-baseline, create a migration file immediately.** File goes in `server/prisma/migrations/{timestamp}_{name}/migration.sql`. SQL Server DDL format: `CREATE TABLE [dbo].[table_name] ([col] TYPE CONSTRAINT, ...)`. Commit it alongside the `schema.prisma` change — in the same PR.
+
+2. **Any Prisma write that is non-critical to the primary operation must be wrapped in a fire-and-forget `.catch()`.** The rule: if the operation already succeeded at the external system (Intune, Graph API, etc.), a local DB write failure must not change the response the user sees.
+
+   ```typescript
+   // Non-critical DB write pattern:
+   prisma.someHistory.createMany({ data: [...] })
+     .catch(err => console.error('[route] history write failed (non-fatal):', err.message))
+   // Do NOT await this — respond immediately with the actual result
+   ```
+
+3. **`migrate-bootstrap.mjs` is a one-time migration rescue tool, not a sync mechanism.** Read its header comment before assuming it will handle a new model.
+
+### Technical Patterns Established
+
+| Pattern | Rule |
+|---------|------|
+| New Prisma model | Always create `migrations/{timestamp}_{name}/migration.sql` in the same commit as the `schema.prisma` change |
+| SQL Server migration format | `CREATE TABLE [dbo].[table] ([id] INT NOT NULL IDENTITY(1,1), ..., CONSTRAINT [table_pkey] PRIMARY KEY CLUSTERED ([id]))` |
+| Non-critical DB writes | Fire-and-forget `.catch(err => console.error(...))` — never `await` a write that should not block or fail the response |
+| Diagnosing "succeeded externally, failed in app" | Check whether the DB write AFTER the external call is wrapped in try/catch; check whether the relevant table exists |
+
+---
+
 ## Lesson Template (copy for new entries)
 
 ```

@@ -1,8 +1,9 @@
 # Issue #002: PowerShell Script Timeouts
 
 **Priority:** BLOCKING (Technical)  
-**Status:** Not Started  
-**Created:** 2026-04-02
+**Status:** Partial — server-side complete, electron-side pending  
+**Created:** 2026-04-02  
+**Partial completion:** 2026-04-09
 
 ## Problem Statement
 

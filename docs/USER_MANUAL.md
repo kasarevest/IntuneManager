@@ -48,7 +48,6 @@ You describe the app you want to deploy in plain language (e.g. "7-Zip" or "Goog
 
 ### What IntuneManager does NOT do (manual steps still required)
 
-- **Assign the app to groups** — After deployment, go to the Intune portal to configure assignments (required, user, available)
 - **Configure supersedence** — If replacing an older version, configure supersedence relationships in Intune portal
 - **Set app icons** — Custom icons must be added in Intune portal
 
@@ -92,16 +91,25 @@ Before running IntuneManager for the first time, ensure the following are in pla
 
 ### Additional prerequisites for Web (Hosted) mode
 
-The following are required before the hosted web app can connect to your Microsoft tenant:
+The following are required before the hosted web app can connect to your Microsoft tenant.
 
-| Requirement | How to set up |
-|-------------|--------------|
-| **Azure AD App Registration** | In `portal.azure.com` → Azure Active Directory → App registrations → New registration. Name: `IntuneManager Web`. Supported accounts: `Accounts in any organizational directory`. Redirect URI (Web): `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io/api/auth/ms-callback` |
-| **API permissions (Delegated)** | In the App Registration → API permissions → Add → Microsoft Graph → Delegated: `DeviceManagementApps.ReadWrite.All`, `DeviceManagementConfiguration.Read.All`, `User.Read` |
-| **Client secret** | In the App Registration → Certificates & secrets → New client secret. Copy the value immediately — it is only shown once |
-| **GitHub Secrets** | In your GitHub repo → Settings → Secrets → Actions: add `AZURE_CLIENT_ID` (Application ID), `AZURE_CLIENT_SECRET` (secret value), and `AZURE_REDIRECT_URI` (the callback URL: `https://ca-intunemanager-prod.yellowforest-c85ceb60.eastus.azurecontainerapps.io/api/auth/ms-callback`). The next CI/CD deploy will inject these into the Container App |
+> **Full setup guide:** See [`docs/TENANT-SETUP.md`](TENANT-SETUP.md) for step-by-step instructions, AADSTS error reference, and a printable summary card.
 
-> **Note:** The first time a user connects their tenant, Microsoft may prompt them to grant admin consent for the required permissions. A Global Administrator or Intune Administrator account is needed for this.
+**Quick summary:**
+
+| Requirement | Detail |
+|-------------|--------|
+| **Azure AD App Registration** | Register at `portal.azure.com` → Azure Active Directory → App registrations → New registration. Supported accounts: `Accounts in any organizational directory (Multitenant)`. Platform: `Web`. Redirect URI: `{base-url}/api/auth/ms-callback` |
+| **API permissions (Delegated)** | Add the following Microsoft Graph delegated permissions — all except `User.Read` require admin consent: |
+| | `User.Read` — identity display (no consent needed) |
+| | `DeviceManagementApps.ReadWrite.All` — deploy and manage Intune apps |
+| | `DeviceManagementConfiguration.Read.All` — read device policies for dashboard |
+| | `GroupMember.Read.All` — list AAD groups for post-deployment assignment |
+| | `DeviceManagementManagedDevices.Read.All` — list managed devices (Devices page) |
+| | `DeviceManagementManagedDevices.PrivilegedOperations.All` — device sync and log actions |
+| **Admin consent** | A Global Administrator must grant org-wide consent for all `DeviceManagement*` and `GroupMember` permissions before non-admin users can sign in. Grant via portal → API permissions → "Grant admin consent" button. |
+| **Client secret** | Certificates & secrets → New client secret. Copy the **Value** immediately — shown once only. Set expiry reminder. |
+| **Environment variables** | Set `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_REDIRECT_URI` in your deployment. See [`docs/TENANT-SETUP.md`](TENANT-SETUP.md) for GitHub Secrets setup and full variable list including `APP_SECRET_KEY` and `DATABASE_URL`. |
 
 ---
 
@@ -451,16 +459,19 @@ Appears whenever a packaging or deployment job is running. Shows:
 | Uploading | .intunewin being uploaded to Azure Blob Storage |
 | Done | App is live in Intune |
 
-### After deployment
+### After deployment — Assign to Groups
 
-After a successful upload, IntuneManager shows "Deployment complete!" — but the app is not yet assigned to any users or devices.
+After a successful upload, IntuneManager shows an **Assign to Groups** modal automatically.
 
-**Go to the Intune portal to add assignments:**
-1. Open `https://intune.microsoft.com`
-2. Navigate to **Apps** → **Windows** → find your newly deployed app
-3. Click **Properties** → **Assignments** → **Edit**
-4. Add the required/available assignments
-5. Click **Review + save**
+1. The modal shows your recently used groups (if any) and all AAD security groups in your tenant
+2. Check the checkbox next to each group you want to assign the app to
+3. Set the **intent** per group using the dropdown:
+   - **Required** — force install on all devices/users in the group (default for device groups)
+   - **Available** — show in Company Portal (default for user groups)
+4. Click **Assign (N)** to apply all assignments in a single Graph API call
+5. Click **Skip** to skip for now — you can assign later in the Intune portal
+
+> IntuneManager remembers which groups you have used before and shows them at the top of the list under "Recently used".
 
 ---
 
@@ -746,7 +757,6 @@ Manage local application accounts:
 
 | Limitation | Impact | Workaround |
 |-----------|--------|-----------|
-| Group assignments not automated | Every deployment requires manual assignment in Intune portal | After deployment, go to intune.microsoft.com → Apps → find app → Assignments |
 | Non-semver versions show "Unknown" | Apps with date-based versions (e.g. OneDrive) won't show update status | Check manually in Intune portal |
 | Update All stops on first failure | A failed app stops the entire queue | Fix the failing app, then re-run Update All |
 | No app icon automation | Icons must be added in Intune portal | Upload icon manually after deploying |
@@ -766,23 +776,21 @@ Manage local application accounts:
 ```
 App Catalog -> Search for app (or browse recommendations) -> Deploy
 -> Deploy page: wait for packaging -> Yes, Deploy to Intune
--> Go to Intune portal -> Assign to groups
+-> Assign to Groups modal: select groups + intent -> Assign (or Skip)
 ```
 
 ### Deploy a pre-built package
 
 ```
 Deploy page -> Ready to Deploy list -> Deploy button on package card
--> Wait for upload -> Deployment complete
--> Go to Intune portal -> Assign to groups
+-> Wait for upload -> Assign to Groups modal -> Assign (or Skip)
 ```
 
 ### Update an existing app
 
 ```
 Installed Apps -> Sync -> Click "Update" button on card -> Deploy page
--> Wait for packaging -> Yes, Deploy to Intune
--> Go to Intune portal -> Verify updated version
+-> Wait for packaging -> Yes, Deploy to Intune -> Assign to Groups modal
 ```
 
 ### Batch update all outdated apps
@@ -813,8 +821,10 @@ Devices -> Find device -> Sync Updates / Sync Drivers
 
 ### First-time setup checklist (Web / Hosted)
 
-- [ ] Create Azure AD App Registration (see Section 2 — Web prerequisites)
-- [ ] Add `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` to GitHub Secrets
+- [ ] Create Azure AD App Registration — follow `docs/TENANT-SETUP.md`
+- [ ] Add all required API permissions; grant admin consent
+- [ ] Add `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` + `APP_SECRET_KEY` to GitHub Secrets / Key Vault
+- [ ] Set `AZURE_REDIRECT_URI` in Container App env vars
 - [ ] Push to master → CI/CD deploys updated Container App
 - [ ] Open Container App URL, save generated password, log in
 - [ ] Settings → Tenant: Sign in with Microsoft Account (full-page redirect)

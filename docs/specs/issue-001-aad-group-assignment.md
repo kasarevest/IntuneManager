@@ -1,8 +1,9 @@
 # Issue #001: AAD Group Assignment UI
 
 **Priority:** CRITICAL (Workflow)  
-**Status:** Not Started  
-**Created:** 2026-04-02
+**Status:** Complete  
+**Created:** 2026-04-02  
+**Completed:** 2026-04-09
 
 ## Problem Statement
 
@@ -192,16 +193,28 @@ export default function AssignmentModal({ appId, appName, onClose }: AssignmentM
 
 ## Acceptance Criteria
 
-- [ ] After successful deployment, user sees assignment modal
-- [ ] Modal shows list of AAD security groups from tenant
-- [ ] User can select multiple groups
-- [ ] User can choose Required, Available, or Uninstall intent
-- [ ] "Assign" button calls Graph API and creates assignments
-- [ ] "Skip" button closes modal without assigning
-- [ ] Success toast shows "Assigned to N group(s)"
-- [ ] Error handling: displays Graph API errors in modal
-- [ ] TypeScript: 0 compile errors
-- [ ] Peer review: PASS
+- [x] After successful deployment, user sees assignment modal (WinTuner deploy + upload-only paths)
+- [x] Modal shows list of AAD security groups from tenant
+- [x] User can select multiple groups
+- [x] User can choose Required or Available intent (per-group toggle; Uninstall scoped out for initial assignment)
+- [x] "Assign" button calls Graph API and creates assignments (single `/assign` batch action)
+- [x] "Skip" button closes modal without assigning
+- [x] Error handling: displays sanitised Graph API errors in modal; Retry button on load failure
+- [x] Peer review: PASS (4 issues found and fixed: missing timeout, missing try/catch, row contrast, raw error messages)
+
+## Implementation Notes (Actual vs Spec)
+
+**Beyond spec:**
+- MRU groups (GroupAssignmentHistory Prisma model) — shows recently used groups at top of list
+- Auto-detection of device vs user group type (DynamicMembership rule + display name heuristic)
+- Per-group intent toggle (spec had a single global radio; per-group is more useful)
+- `GroupMember.Read.All` scope added to `graph-auth.ts` SCOPES (requires user to re-authenticate)
+- `parseJson<T>` helper added to `api.ts` to handle Envoy proxy plain-text 503 responses
+
+**Diverged from spec:**
+- Used `/assign` batch action (single POST) instead of N sequential POSTs — avoids 503 timeouts
+- Token injected via `-AccessToken` server-side (not PS-module-level auth per spec skeleton)
+- Web server routes in `server/routes/ps.ts` (not Electron IPC handlers) — web-mode deployment
 
 ## Testing Plan
 

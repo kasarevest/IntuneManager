@@ -292,8 +292,8 @@ router.post('/api/ps/app-assignments', requireAuth as import('express').RequestH
   ])
   const data = result.result as { success?: boolean; assigned?: number; error?: string } | null
   if (data?.success) {
-    // Persist to MRU history
-    await prisma.groupAssignmentHistory.createMany({
+    // Persist to MRU history — non-fatal; assignment already succeeded in Intune
+    prisma.groupAssignmentHistory.createMany({
       data: assignments.map(a => ({
         groupId: a.groupId,
         groupName: a.groupName,
@@ -301,7 +301,7 @@ router.post('/api/ps/app-assignments', requireAuth as import('express').RequestH
         intent: a.intent,
         appId
       }))
-    })
+    }).catch(err => console.error('[ps/app-assignments] MRU history write failed (non-fatal):', err.message))
   }
   res.json(data ?? { success: false, error: 'No result from PS script' })
 })

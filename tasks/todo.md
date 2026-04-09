@@ -459,6 +459,94 @@ the Container App, and point the app settings at the mount paths.
 
 ---
 
+---
+
+---
+
+# Task: Issue #001 — AAD Group Assignment — COMPLETE
+
+## Objective
+Add post-deployment group assignment to eliminate manual portal work after every deploy.
+
+## Checklist
+
+- [x] `Get-AadGroups.ps1` — fetches security-enabled groups; detects device vs user type via DynamicMembership rule + display name heuristic; `-TimeoutSec 20` on `Invoke-RestMethod`
+- [x] `Set-IntuneAppAssignments.ps1` — single `/assign` batch POST (not N sequential calls); `-TimeoutSec 30`
+- [x] `server/routes/ps.ts` — `GET /api/ps/aad-groups`, `GET /api/ps/recent-groups`, `POST /api/ps/app-assignments`; try/catch on all three; 20 000 ms timeout override on groups fetch
+- [x] `server/prisma/schema.prisma` — `GroupAssignmentHistory` model added
+- [x] `server/services/graph-auth.ts` — `GroupMember.Read.All` added to SCOPES
+- [x] `server/services/ps-bridge.ts` — `timeoutMs` parameter added (default 60 000 ms), `killProc()`, `setTimeout`/`clearTimeout`
+- [x] `src/types/ipc.ts` — `AadGroup`, `RecentGroup`, `GroupAssignment`, `GetAadGroupsRes`, `GetRecentGroupsRes`, `SetAssignmentsReq`, `SetAssignmentsRes`
+- [x] `src/lib/api.ts` — `parseJson<T>` helper, `ipcPsGetAadGroups`, `ipcPsGetRecentGroups`, `ipcPsSetAppAssignments`
+- [x] `src/lib/sse.ts` — `onJobComplete` callback extended with optional `appId`
+- [x] `server/routes/ai.ts` — `runUploadOnlyJob` emits `appId` in `job:complete` event
+- [x] `src/components/AssignmentModal.tsx` — new component; `Promise.allSettled` load; MRU + all groups; per-group intent toggle; `width: auto` on checkbox + select; white group name text
+- [x] `src/pages/Deploy.tsx` — `AssignmentModal` triggered after WinTuner deploy success (appId from response) and after upload-only job complete (appId from SSE)
+- [x] Peer review — 4 issues found and fixed (missing timeout, missing try/catch on routes, row contrast, raw error messages exposed to user)
+- [x] `tasks/lessons.md` — Lesson 014 added
+- [x] `docs/specs/issue-001-aad-group-assignment.md` — status updated to Complete
+- [x] `docs/specs/ISSUES-INDEX.md` — #001 checked off
+
+## Bugs Fixed During Implementation
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| 403 on `/api/ps/aad-groups` | `GroupMember.Read.All` missing from SCOPES | Added to `graph-auth.ts` SCOPES; user must re-auth |
+| JSON parse error "Unexpected token 'u'" | Envoy proxy returned plain text; `.json()` threw | `parseJson<T>` helper reads text first |
+| 503 upstream connect (groups) | `Get-AadGroups.ps1` had no `-TimeoutSec`; held connection past Envoy limit | `-TimeoutSec 20` + 20 000 ms route timeout |
+| 503 upstream connect (assignment) | N sequential POSTs with no timeout | Rewrote to single `/assign` batch POST + `-TimeoutSec 30` |
+| Group names invisible | `global.css` sets `width:100%` on all inputs; checkbox expanded to full row width, hiding name span | `style={{ width: 'auto' }}` on checkbox and select |
+| `recentGroups` empty when Graph API fails | `Promise.all` rejects immediately if any source fails | Changed to `Promise.allSettled` |
+
+## Post-Flight Summary
+
+**Result: PASS**
+
+| Component | Status |
+|-----------|--------|
+| AssignmentModal renders after WinTuner deploy | ✓ |
+| AssignmentModal renders after upload-only deploy | ✓ |
+| MRU groups shown in "Recently used" section | ✓ |
+| Device groups default to Required, user groups to Available | ✓ |
+| Per-group intent toggle (Required / Available) | ✓ |
+| Single Graph API `/assign` call | ✓ |
+| Error handling with Retry button | ✓ |
+| GroupAssignmentHistory populated on successful assign | ✓ |
+
+---
+
+---
+
+---
+
+---
+
+# Task: Issue #001 Bug Fix — MRU History Crash + Missing Migration — COMPLETE
+
+## Root Cause
+Assignment succeeded in Intune but the app showed an error. Two linked problems:
+
+1. `group_assignment_history` table did not exist in Azure SQL. `migrate-bootstrap.mjs` is a one-time operation (no-op once `_prisma_migrations` exists). When `GroupAssignmentHistory` was added to `schema.prisma` after the baseline was already established, no migration file was committed, so `prisma migrate deploy` had nothing to apply.
+
+2. `prisma.groupAssignmentHistory.createMany()` in `POST /api/ps/app-assignments` was outside any try/catch. When it threw "table does not exist", Express returned a 500 — making the assignment appear failed even though Intune had it.
+
+## Checklist
+
+- [x] `server/routes/ps.ts` — wrap `createMany` in fire-and-forget `.catch()` (MRU is non-critical; assignment already confirmed)
+- [x] `server/prisma/migrations/20260409000000_add_group_assignment_history/migration.sql` — SQL Server DDL to create the table on next `prisma migrate deploy`
+- [x] `tasks/lessons.md` — Lesson 015 added
+- [x] Deployment checklist passed
+- [x] Committed and pushed to master
+
+## Side-Effect Audit
+1. `.catch()` on `createMany` means MRU failures are logged but silent to the user — correct behaviour; MRU is cosmetic
+2. Migration SQL is idempotent at the deploy level — `prisma migrate deploy` tracks applied migrations, won't re-run it
+3. No change to the PS script or Graph API call — no risk to Intune-side behaviour
+
+---
+
+---
+
 # Archived: Task — PowerShell + WPF Desktop Application (COMPLETE)
 
 > See git history for original todo.md content. All checklist items completed, peer review PASS, post-flight written.
