@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Phase 5 — one-time setup: creates Azure File Shares for source and output
+    Phase 5 - one-time setup: creates Azure File Shares for source and output
     files, registers them with the Container Apps environment, and mounts them
     into the Container App at /mnt/source and /mnt/output.
 
@@ -150,7 +150,7 @@ $existingVolumes = @()
 if ($patch.properties.template.PSObject.Properties['volumes'] -and $patch.properties.template.volumes) {
     $existingVolumes = @($patch.properties.template.volumes | Where-Object { $_.name -notin @($SOURCE_ENV, $OUTPUT_ENV) })
 }
-$patch.properties.template.volumes = $existingVolumes + $newVolumes
+$patch.properties.template | Add-Member -MemberType NoteProperty -Name 'volumes' -Value ($existingVolumes + $newVolumes) -Force
 
 # ─ Volume mounts (add/replace; keep any existing non-storage mounts) ──────
 $newMounts = @(
@@ -162,7 +162,7 @@ $existingMounts = @()
 if ($container.PSObject.Properties['volumeMounts'] -and $container.volumeMounts) {
     $existingMounts = @($container.volumeMounts | Where-Object { $_.volumeName -notin @($SOURCE_ENV, $OUTPUT_ENV) })
 }
-$container.volumeMounts = $existingMounts + $newMounts
+$container | Add-Member -MemberType NoteProperty -Name 'volumeMounts' -Value ($existingMounts + $newMounts) -Force
 $patch.properties.template.containers[0] = $container
 
 # ─ Write PATCH body to temp file and apply ────────────────────────────────
