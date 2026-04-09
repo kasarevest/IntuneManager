@@ -29,12 +29,15 @@ try {
     $candidates += [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\IntuneWinAppUtil.exe'))
     # Same folder as script
     $candidates += Join-Path $PSScriptRoot 'IntuneWinAppUtil.exe'
-    # Desktop
-    $candidates += Join-Path ([Environment]::GetFolderPath('Desktop')) 'IntuneWinAppUtil.exe'
-    # User Downloads
-    $candidates += Join-Path $env:USERPROFILE 'Downloads\IntuneWinAppUtil.exe'
-    # Intune MSI Prep on Desktop
-    $candidates += Join-Path ([Environment]::GetFolderPath('Desktop')) 'Intune MSI Prep\IntuneWinAppUtil.exe'
+    # Desktop and user paths — guard against empty strings (GetFolderPath returns '' on Linux)
+    $desktopPath = [Environment]::GetFolderPath('Desktop')
+    if ($desktopPath) {
+        $candidates += Join-Path $desktopPath 'IntuneWinAppUtil.exe'
+        $candidates += Join-Path $desktopPath 'Intune MSI Prep\IntuneWinAppUtil.exe'
+    }
+    if ($env:USERPROFILE) {
+        $candidates += Join-Path $env:USERPROFILE 'Downloads\IntuneWinAppUtil.exe'
+    }
 
     foreach ($c in $candidates) {
         if (Test-Path $c) { $resolvedTool = $c; break }
