@@ -23,6 +23,7 @@ const SCOPES = [
   'DeviceManagementApps.ReadWrite.All',
   'DeviceManagementConfiguration.Read.All',
   'User.Read',
+  'GroupMember.Read.All',
   'offline_access',
 ].join(' ')
 
