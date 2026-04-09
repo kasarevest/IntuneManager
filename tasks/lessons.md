@@ -935,6 +935,45 @@ Issue #002 — the electron-side `runPsScript()` had no timeout mechanism while 
 
 ---
 
+## Lesson 017 — Smart Update Feature: Batch Routes vs Proxy Timeout + Audit ID Uniqueness (2026-04-09)
+
+### Keywords
+`envoy`, `proxy-timeout`, `batch-route`, `wt-update`, `wt-auto-update`, `job_id`, `unique-constraint`, `audit-log`, `peer-review`
+
+### What Happened
+
+Implemented the InstalledApps smart-update feature. Peer review caught two issues before deployment:
+
+**Bug 1 — `/wt-auto-update` batch route would always 503 in production.**
+The new batch route looped through items, calling `Update-WtApp.ps1` sequentially with a 600 s timeout per item. The Envoy proxy in Azure Container Apps kills connections at ~60 s. The HTTP response would never arrive; the client would receive a 503 after 60 s, set all items to `'error'`, while the server continued running scripts in the background — successfully updating apps that the UI thought had failed.
+
+**Bug 2 — `job_id` in audit log used `packageId + Date.now()`, risking unique-constraint violation.**
+In a loop where two items complete within the same millisecond (plausible for fast-failing scripts), both audit rows get the same `job_id`. Prisma rejects the second `.create()` with a unique constraint error; the `.catch()` swallows it silently. Audit record lost.
+
+### Anti-Pattern (Why It Happened)
+
+**Batch routes with long-running PS scripts bypass the proxy timeout contract.** Any single route that calls `runPsScript` for multiple items in sequence will always exceed the Envoy proxy limit when items take more than ~60 s each. The existing manual update path correctly uses one HTTP request per item; the batch route broke this invariant.
+
+**`Date.now()` alone is not a sufficient unique key in a tight loop.** Millisecond resolution means collisions are possible across loop iterations that complete quickly (e.g., auth failures, short-running scripts).
+
+### Heuristic (Prevention)
+
+1. **Never create a batch route that runs `runPsScript` N times in sequence.** The correct pattern for triggering N long-running PS operations from the frontend is: one HTTP request per operation, fired sequentially from the client. This keeps each request within the proxy timeout window.
+
+2. **For unique IDs in audit/job records, always include a value that is unique per item** — not just a timestamp. Use `graphId` (a GUID), `packageId`, or a UUID (`crypto.randomUUID()`). `Date.now()` alone is never sufficient in a loop.
+
+3. **When an existing route already does what you need, extend it rather than creating a parallel batch endpoint.** The `wt-update-app` route already runs `Update-WtApp.ps1` correctly. Adding `updateType?: 'auto' | 'manual'` to that route's request body gives auto-update audit logging without a new surface area.
+
+### Technical Patterns Established
+
+| Pattern | Rule |
+|---------|------|
+| Per-item PS operations from frontend | One HTTP call per item, sequential in client; never a batch server route |
+| Audit log `job_id` uniqueness | Use `${graphId}-${Date.now()}` or `crypto.randomUUID()` — never `${packageId}-${Date.now()}` in a loop |
+| Extending existing routes for new modes | Add optional `updateType?` / `mode?` param to existing route; branch inside the handler. Avoids duplicate timeout, auth, and error-handling boilerplate |
+
+---
+
 ## Lesson Template (copy for new entries)
 
 ```

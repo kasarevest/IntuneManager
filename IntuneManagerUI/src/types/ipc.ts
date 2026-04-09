@@ -202,6 +202,8 @@ export interface WtUpdateItem {
   currentVersion: string
   latestVersion: string
   graphId: string
+  daysKnown?: number           // days since this (packageId, latestVersion) was first detected
+  autoUpdateEligible?: boolean // true when daysKnown > 7
 }
 export interface WtUpdatesRes {
   success: boolean
@@ -212,7 +214,7 @@ export interface WtPackageReq { packageId: string; packageFolder: string; versio
 export interface WtPackageRes { success: boolean; packageFolder?: string; intunewinPath?: string | null; appJsonPath?: string | null; error?: string }
 export interface WtDeployReq { packageFolder: string; assignment?: string; graphId?: string; keepAssignments?: boolean; jobId?: string }
 export interface WtDeployRes { success: boolean; appId?: string; error?: string }
-export interface WtUpdateAppReq { packageId: string; graphId: string; packageFolder: string; version?: string; jobId?: string }
+export interface WtUpdateAppReq { packageId: string; graphId: string; packageFolder: string; version?: string; jobId?: string; updateType?: 'auto' | 'manual'; currentVersion?: string; latestVersion?: string }
 export interface WtUpdateAppRes { success: boolean; graphId?: string; error?: string }
 
 // AAD Group Assignment

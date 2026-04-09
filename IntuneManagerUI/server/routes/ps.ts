@@ -468,14 +468,33 @@ router.get('/api/ps/autopilot-events', requireAuth as import('express').RequestH
 // ── WinTuner routes ───────────────────────────────────────────────────────────
 
 // GET /api/ps/wt-updates — list Win32 apps that have a newer WinGet version available
+// Enriches each item with daysKnown (since first detection) and autoUpdateEligible (> 7 days).
 router.get('/api/ps/wt-updates', requireAuth as import('express').RequestHandler, async (req, res) => {
-  let accessToken: string
-  try { accessToken = await getAccessToken() } catch (e) {
-    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, updates: [], error: e.message }); return }
-    throw e
+  try {
+    let accessToken: string
+    try { accessToken = await getAccessToken() } catch (e) {
+      if (e instanceof GraphAuthError) { res.status(401).json({ success: false, updates: [], error: (e as Error).message }); return }
+      throw e
+    }
+    const result = await runPsScript('Get-WtUpdates.ps1', ['-AccessToken', accessToken])
+    const data = result.result as { success: boolean; updates?: Array<{ name: string; packageId: string; currentVersion: string; latestVersion: string; graphId: string }>; error?: string } | null
+    if (!data?.success || !data.updates?.length) {
+      res.json(data ?? { success: false, updates: [], error: 'No result from PS script' }); return
+    }
+    const now = Date.now()
+    const enriched = await Promise.all(data.updates.map(async (u) => {
+      const record = await prisma.wtDetectedUpdate.upsert({
+        where: { package_id_latest_version: { package_id: u.packageId, latest_version: u.latestVersion } },
+        create: { package_id: u.packageId, latest_version: u.latestVersion },
+        update: {},
+      })
+      const daysKnown = Math.floor((now - record.first_seen_at.getTime()) / 86_400_000)
+      return { ...u, daysKnown, autoUpdateEligible: daysKnown > 7 }
+    }))
+    res.json({ success: true, updates: enriched })
+  } catch (e) {
+    res.json({ success: false, updates: [], error: (e as Error).message })
   }
-  const result = await runPsScript('Get-WtUpdates.ps1', ['-AccessToken', accessToken])
-  res.json(result.result ?? { success: false, updates: [], error: 'No result from PS script' })
 })
 
 // POST /api/ps/wt-package — download a WinGet package via WinTuner (New-WtWingetPackage)
@@ -519,9 +538,11 @@ router.post('/api/ps/wt-deploy', requireAuth as import('express').RequestHandler
 })
 
 // POST /api/ps/wt-update-app — update an existing Intune app to its latest WinGet version
+// Accepts optional updateType='auto' to log auto-update audit records to app_deployments.
 router.post('/api/ps/wt-update-app', requireAuth as import('express').RequestHandler, async (req, res) => {
-  const { packageId, graphId, packageFolder, version, jobId } = req.body as {
+  const { packageId, graphId, packageFolder, version, jobId, updateType, currentVersion, latestVersion } = req.body as {
     packageId: string; graphId: string; packageFolder: string; version?: string; jobId?: string
+    updateType?: 'auto' | 'manual'; currentVersion?: string; latestVersion?: string
   }
   let accessToken: string
   try { accessToken = await getAccessToken() } catch (e) {
@@ -534,7 +555,27 @@ router.post('/api/ps/wt-update-app', requireAuth as import('express').RequestHan
   const result = await runPsScript('Update-WtApp.ps1', args, (msg, level) => {
     if (jobId) sendToRenderer('job:log', { jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
   })
-  res.json(result.result ?? { success: false, error: 'Update failed' })
+  const data = result.result as { success: boolean; graphId?: string; error?: string } | null
+
+  // Audit log for auto-updates — fire-and-forget (non-critical)
+  if (updateType === 'auto') {
+    prisma.appDeployment.create({
+      data: {
+        job_id: `auto-upd-${graphId}-${Date.now()}`,
+        app_name: packageId,
+        winget_id: packageId,
+        intune_app_id: graphId,
+        deployed_version: latestVersion ?? null,
+        operation: 'wt-auto-update',
+        status: data?.success ? 'completed' : 'failed',
+        error_message: data?.success ? null : (data?.error ?? 'Update failed'),
+        completed_at: new Date(),
+        log_snapshot: JSON.stringify({ previousVersion: currentVersion, newVersion: latestVersion }),
+      }
+    }).catch(err => console.error('[wt-update-app] audit log write failed (non-fatal):', err.message))
+  }
+
+  res.json(data ?? { success: false, error: 'Update failed' })
 })
 
 // POST /api/aws/sso-login

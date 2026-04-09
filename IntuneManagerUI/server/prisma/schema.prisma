@@ -66,6 +66,16 @@ model GroupAssignmentHistory {
   @@map("group_assignment_history")
 }
 
+model WtDetectedUpdate {
+  id             Int      @id @default(autoincrement())
+  package_id     String
+  latest_version String
+  first_seen_at  DateTime @default(now())
+
+  @@unique([package_id, latest_version])
+  @@map("wt_detected_updates")
+}
+
 model AppDeployment {
   id               Int       @id @default(autoincrement())
   job_id           String    @unique

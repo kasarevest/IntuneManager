@@ -233,6 +233,7 @@ export const ipcPsWtDeploy = (req: WtDeployReq): Promise<WtDeployRes> =>
 export const ipcPsWtUpdateApp = (req: WtUpdateAppReq): Promise<WtUpdateAppRes> =>
   post('/api/ps/wt-update-app', req)
 
+
 // ─── AAD Group Assignments ────────────────────────────────────────────────────
 
 export const ipcPsGetAadGroups = (search?: string): Promise<GetAadGroupsRes> =>

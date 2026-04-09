@@ -547,6 +547,38 @@ Assignment succeeded in Intune but the app showed an error. Two linked problems:
 
 ---
 
+# Task: Feature — Installed Apps Smart Update Behavior — COMPLETE
+
+## Objective
+Age-based WinTuner update logic: auto-update apps whose update was detected >7 days ago; show manual "Update App" button for newer updates. Preserve assignments. Audit log. Text-based state labels replacing cloud-only icon.
+
+## Checklist
+- [x] `server/prisma/schema.prisma` — `WtDetectedUpdate` model (`package_id`, `latest_version`, `first_seen_at`)
+- [x] `server/prisma/migrations/20260409010000_add_wt_detected_updates/migration.sql` — SQL Server DDL
+- [x] `server/routes/ps.ts` — `/wt-updates` enriched with `daysKnown` + `autoUpdateEligible` via DB upsert; new `POST /wt-auto-update` route
+- [x] `src/types/ipc.ts` — `WtUpdateItem` extended; `WtAutoUpdateItem/Req/Res` added
+- [x] `src/lib/api.ts` — `ipcPsWtAutoUpdate` added
+- [x] `src/pages/InstalledApps.tsx` — `WtUpdateRow` component; `wtUpdateStates` map; `handleAutoUpdate`; two-section panel (Auto-updating / Pending review)
+
+## Key Design Decision
+WinTuner does not expose WinGet package release dates. We track **first_seen_at** in `wt_detected_updates` DB table — "age of the update" = time since we first detected it. Auto-update eligibility = `daysKnown > 7`.
+
+## Side-Effect Audit
+1. `/wt-updates` response gains `daysKnown` + `autoUpdateEligible` fields — additive, non-breaking
+2. `wt-auto-update` calls `Update-WtApp.ps1` sequentially (one PS process at a time, same as manual update) — no Graph API rate limit risk
+3. `app_deployments` rows with `operation = 'wt-auto-update'` — new operation value, no existing code reads by operation value
+
+## Verification
+1. First page load: eligible items (>7 days) show "↻ Updating..." immediately; `wt_detected_updates` rows created
+2. Manual items (<7 days): show "Update App" button; click → "↻ Updating..." → "✓ Updated"
+3. After auto-update completes: state changes to "✓ Updated" per-item
+4. Next `/wt-updates` call after successful update: app no longer in list (WinTuner confirms current)
+5. `app_deployments` table: rows with `operation = 'wt-auto-update'` created for each auto-update
+
+---
+
+---
+
 # Archived: Task — PowerShell + WPF Desktop Application (COMPLETE)
 
 > See git history for original todo.md content. All checklist items completed, peer review PASS, post-flight written.
