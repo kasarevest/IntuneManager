@@ -263,6 +263,7 @@ const s: Record<string, React.CSSProperties> = {
   groupName: {
     flex: 1,
     fontSize: 13,
+    color: 'var(--text-100)',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -271,7 +272,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 10,
     borderRadius: 4,
     padding: '1px 6px',
-    color: 'var(--text-300)',
+    color: 'var(--text-400)',
     flexShrink: 0,
   },
 }

@@ -59,9 +59,18 @@ function getAuthHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+async function parseJson<T>(res: Response): Promise<T> {
+  const text = await res.text()
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new Error(`Server error (${res.status}): ${text.slice(0, 120)}`)
+  }
+}
+
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: { ...getAuthHeader() } })
-  return res.json() as Promise<T>
+  return parseJson<T>(res)
 }
 
 async function post<T>(url: string, body?: unknown): Promise<T> {
@@ -70,7 +79,7 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
     body: body !== undefined ? JSON.stringify(body) : undefined
   })
-  return res.json() as Promise<T>
+  return parseJson<T>(res)
 }
 
 async function del<T>(url: string, body?: unknown): Promise<T> {
@@ -79,7 +88,7 @@ async function del<T>(url: string, body?: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
     body: body !== undefined ? JSON.stringify(body) : undefined
   })
-  return res.json() as Promise<T>
+  return parseJson<T>(res)
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
