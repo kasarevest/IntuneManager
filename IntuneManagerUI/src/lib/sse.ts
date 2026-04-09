@@ -61,7 +61,7 @@ export const onJobLog = (callback: (data: LogEntry) => void): (() => void) =>
 export const onJobPhaseChange = (callback: (data: { jobId: string; phase: string; label: string }) => void): (() => void) =>
   subscribe('job:phase-change', callback as Listener)
 
-export const onJobComplete = (callback: (data: { jobId: string }) => void): (() => void) =>
+export const onJobComplete = (callback: (data: { jobId: string; appId?: string }) => void): (() => void) =>
   subscribe('job:complete', callback as Listener)
 
 export const onJobError = (callback: (data: { jobId: string; error: string; phase: string }) => void): (() => void) =>

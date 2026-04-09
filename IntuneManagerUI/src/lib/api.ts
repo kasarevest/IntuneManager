@@ -31,7 +31,11 @@ import type {
   WtUpdatesRes,
   WtPackageReq, WtPackageRes,
   WtDeployReq, WtDeployRes,
-  WtUpdateAppReq, WtUpdateAppRes
+  WtUpdateAppReq, WtUpdateAppRes,
+  GetAadGroupsRes,
+  GetRecentGroupsRes,
+  SetAssignmentsReq,
+  SetAssignmentsRes
 } from '../types/ipc'
 
 export interface SettingsGetRes {
@@ -219,3 +223,14 @@ export const ipcPsWtDeploy = (req: WtDeployReq): Promise<WtDeployRes> =>
 
 export const ipcPsWtUpdateApp = (req: WtUpdateAppReq): Promise<WtUpdateAppRes> =>
   post('/api/ps/wt-update-app', req)
+
+// ─── AAD Group Assignments ────────────────────────────────────────────────────
+
+export const ipcPsGetAadGroups = (search?: string): Promise<GetAadGroupsRes> =>
+  get(`/api/ps/aad-groups${search ? `?search=${encodeURIComponent(search)}` : ''}`)
+
+export const ipcPsGetRecentGroups = (): Promise<GetRecentGroupsRes> =>
+  get('/api/ps/recent-groups')
+
+export const ipcPsSetAppAssignments = (req: SetAssignmentsReq): Promise<SetAssignmentsRes> =>
+  post('/api/ps/app-assignments', req)

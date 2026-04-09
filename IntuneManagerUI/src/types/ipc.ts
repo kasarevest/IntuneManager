@@ -214,3 +214,16 @@ export interface WtDeployReq { packageFolder: string; assignment?: string; graph
 export interface WtDeployRes { success: boolean; appId?: string; error?: string }
 export interface WtUpdateAppReq { packageId: string; graphId: string; packageFolder: string; version?: string; jobId?: string }
 export interface WtUpdateAppRes { success: boolean; graphId?: string; error?: string }
+
+// AAD Group Assignment
+export interface AadGroup {
+  id: string
+  displayName: string
+  groupType: 'device' | 'user'
+}
+export interface GetAadGroupsRes { success: boolean; groups: AadGroup[]; error?: string }
+export interface RecentGroup extends AadGroup { intent: 'required' | 'available'; useCount: number }
+export interface GetRecentGroupsRes { success: boolean; groups: RecentGroup[] }
+export interface GroupAssignment { groupId: string; groupName: string; groupType: 'device' | 'user'; intent: 'required' | 'available' }
+export interface SetAssignmentsReq { appId: string; assignments: GroupAssignment[] }
+export interface SetAssignmentsRes { success: boolean; assigned?: number; error?: string }

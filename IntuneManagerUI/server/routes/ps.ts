@@ -234,6 +234,74 @@ router.get('/api/ps/list-packages', requireAuth as import('express').RequestHand
   res.json({ success: true, packages: [] })
 })
 
+// GET /api/ps/aad-groups?search=...
+router.get('/api/ps/aad-groups', requireAuth as import('express').RequestHandler, async (req, res) => {
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, groups: [], error: e.message }); return }
+    throw e
+  }
+  const { search } = req.query
+  const args = ['-AccessToken', accessToken]
+  if (search) args.push('-Search', String(search))
+  const result = await runPsScript('Get-AadGroups.ps1', args)
+  res.json(result.result ?? { success: false, groups: [], error: 'No result from PS script' })
+})
+
+// GET /api/ps/recent-groups — top 5 most-used groups from assignment history
+router.get('/api/ps/recent-groups', requireAuth as import('express').RequestHandler, async (req, res) => {
+  try {
+    const rows = await prisma.groupAssignmentHistory.groupBy({
+      by: ['groupId', 'groupName', 'groupType', 'intent'],
+      _count: { groupId: true },
+      orderBy: { _count: { groupId: 'desc' } },
+      take: 5
+    })
+    const groups = rows.map(r => ({
+      id: r.groupId,
+      displayName: r.groupName,
+      groupType: r.groupType as 'device' | 'user',
+      intent: r.intent as 'required' | 'available',
+      useCount: r._count.groupId
+    }))
+    res.json({ success: true, groups })
+  } catch (e) {
+    res.json({ success: false, groups: [], error: (e as Error).message })
+  }
+})
+
+// POST /api/ps/app-assignments
+router.post('/api/ps/app-assignments', requireAuth as import('express').RequestHandler, async (req, res) => {
+  const { appId, assignments } = req.body as {
+    appId: string
+    assignments: Array<{ groupId: string; groupName: string; groupType: string; intent: string }>
+  }
+  let accessToken: string
+  try { accessToken = await getAccessToken() } catch (e) {
+    if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
+    throw e
+  }
+  const result = await runPsScript('Set-IntuneAppAssignments.ps1', [
+    '-AppId', appId,
+    '-AssignmentsJson', JSON.stringify(assignments.map(a => ({ groupId: a.groupId, intent: a.intent }))),
+    '-AccessToken', accessToken
+  ])
+  const data = result.result as { success?: boolean; assigned?: number; error?: string } | null
+  if (data?.success) {
+    // Persist to MRU history
+    await prisma.groupAssignmentHistory.createMany({
+      data: assignments.map(a => ({
+        groupId: a.groupId,
+        groupName: a.groupName,
+        groupType: a.groupType,
+        intent: a.intent,
+        appId
+      }))
+    })
+  }
+  res.json(data ?? { success: false, error: 'No result from PS script' })
+})
+
 // DELETE /api/ps/delete-package
 router.delete('/api/ps/delete-package', requireAuth as import('express').RequestHandler, async (req, res) => {
   const { intunewinPath } = req.body as { intunewinPath: string }

@@ -878,7 +878,7 @@ async function runUploadOnlyJob(
 
   log('Deployment complete! App is now available in Intune.')
   setPhase('done')
-  sendEvent('job:complete', { jobId })
+  sendEvent('job:complete', { jobId, appId })
 }
 
 // ─── Package-only job (steps 1-10, no upload) ─────────────────────────────────

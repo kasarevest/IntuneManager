@@ -6,6 +6,7 @@ import ProgressStepper from '../components/ProgressStepper'
 import type { LogEntry, DeployJob } from '../types/app'
 import type { IntunewinPackage } from '../types/ipc'
 import { ipcAiPackageOnly, ipcAiUploadOnly, ipcAiCancel, ipcPsListIntunewinPackages, ipcPsDeletePackage, ipcPsWtPackage, ipcPsWtDeploy, ipcSettingsGet } from '../lib/api'
+import AssignmentModal from '../components/AssignmentModal'
 import { onJobLog, onJobPhaseChange, onJobComplete, onJobError, onJobPackageComplete } from '../lib/sse'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -55,6 +56,9 @@ export default function Deploy() {
   // "Deploy to Intune?" confirmation modal
   const [deployPrompt, setDeployPrompt] = useState<{ appRequest: string; intunewinPath: string | null; packageSettings: Record<string, unknown> | null } | null>(null)
   const [deploying, setDeploying] = useState(false)
+
+  // Post-deployment assignment modal
+  const [assignmentTarget, setAssignmentTarget] = useState<{ appId: string; appName?: string } | null>(null)
 
   // Update queue (for Update All from Dashboard)
   const [updateQueue, setUpdateQueue] = useState<UpdateQueueItem[]>([])
@@ -235,9 +239,14 @@ export default function Deploy() {
         if (data.jobId !== jobId) return
         setJob(prev => prev ? { ...prev, phase: data.phase, phaseLabel: data.label } : prev)
       }),
-      onJobComplete((data: { jobId: string }) => {
+      onJobComplete((data: { jobId: string; appId?: string }) => {
         if (data.jobId !== jobId) return
         clearSubs()
+
+        // Show assignment modal if we got an appId back
+        if (data.appId) {
+          setAssignmentTarget({ appId: data.appId })
+        }
 
         // Advance update queue if in batch mode
         const queue = updateQueueRef.current
@@ -315,6 +324,9 @@ export default function Deploy() {
       clearSubs()
       if (deployRes.success) {
         setJob(prev => prev ? { ...prev, status: 'complete', phase: 'done', phaseLabel: 'WinTuner deployment complete!' } : prev)
+        if (deployRes.appId) {
+          setAssignmentTarget({ appId: deployRes.appId, appName: appName || wingetId })
+        }
       } else {
         setJob(prev => prev ? { ...prev, status: 'error', error: deployRes.error ?? 'WinTuner deployment failed' } : prev)
       }
@@ -594,6 +606,18 @@ export default function Deploy() {
       </div>
 
       {renderDetailsModal()}
+
+      {assignmentTarget && (
+        <AssignmentModal
+          appId={assignmentTarget.appId}
+          appName={assignmentTarget.appName}
+          onDone={(assigned) => {
+            setAssignmentTarget(null)
+            setJob(prev => prev ? { ...prev, phaseLabel: `Deployment complete! Assigned to ${assigned} group(s).` } : prev)
+          }}
+          onSkip={() => setAssignmentTarget(null)}
+        />
+      )}
     </div>
   )
 }

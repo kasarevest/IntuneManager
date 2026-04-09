@@ -54,6 +54,18 @@ model AppSetting {
   @@map("app_settings")
 }
 
+model GroupAssignmentHistory {
+  id        Int      @id @default(autoincrement())
+  groupId   String
+  groupName String
+  groupType String   // 'device' | 'user'
+  intent    String   // 'required' | 'available'
+  appId     String
+  usedAt    DateTime @default(now())
+
+  @@map("group_assignment_history")
+}
+
 model AppDeployment {
   id               Int       @id @default(autoincrement())
   job_id           String    @unique
