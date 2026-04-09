@@ -165,21 +165,20 @@ if ($container.PSObject.Properties['volumeMounts'] -and $container.volumeMounts)
 $container | Add-Member -MemberType NoteProperty -Name 'volumeMounts' -Value ($existingMounts + $newMounts) -Force
 $patch.properties.template.containers[0] = $container
 
-# ─ Strip properties added by newer API versions that older versions reject ─
-# identitySettings and runtime are not in the 2024-03-01 ContainerAppConfiguration
-# schema; sending them causes a 400. PATCH in ARM merges at top level, so
-# omitting them here does not remove them from the live resource.
-foreach ($unsupported in @('identitySettings', 'runtime')) {
-    if ($patch.properties.PSObject.Properties[$unsupported]) {
-        $patch.properties.PSObject.Properties.Remove($unsupported)
-        Log "  Stripped unsupported property '$unsupported' from PATCH body."
+# ─ Write PATCH body to temp file and apply ────────────────────────────────
+# Send only properties.template to avoid newer API fields (identitySettings,
+# runtime, etc.) that the 2024-03-01 schema rejects. ARM PATCH merges at the
+# top level, so configuration/ingress/secrets are left untouched.
+$minimalPatch = [ordered]@{
+    location   = $caJson.location
+    properties = [ordered]@{
+        template = $patch.properties.template
     }
 }
 
-# ─ Write PATCH body to temp file and apply ────────────────────────────────
 $tmpFile = [System.IO.Path]::GetTempFileName()
 try {
-    $patch | ConvertTo-Json -Depth 30 | Out-File -FilePath $tmpFile -Encoding utf8 -NoNewline
+    $minimalPatch | ConvertTo-Json -Depth 30 | Out-File -FilePath $tmpFile -Encoding utf8 -NoNewline
 
     $sub = az account show --query id --output tsv
     $patchUrl = "https://management.azure.com/subscriptions/${sub}/resourceGroups/${RG_NAME}/providers/Microsoft.App/containerApps/${CA_NAME}?api-version=${API_VER}"
