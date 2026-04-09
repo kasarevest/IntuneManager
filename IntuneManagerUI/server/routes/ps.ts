@@ -223,8 +223,8 @@ router.get('/api/ps/list-packages', requireAuth as import('express').RequestHand
     const row = await prisma.appSetting.findUnique({ where: { key } })
     return row?.value || ''
   }
-  const outputFolder = await getRow('output_folder_path')
-  const sourceRootPath = await getRow('source_root_path')
+  const outputFolder = await getRow('output_folder_path') || '/mnt/output'
+  const sourceRootPath = await getRow('source_root_path') || '/mnt/source'
   const args = []
   if (outputFolder) args.push('-OutputFolder', outputFolder)
   if (sourceRootPath) args.push('-SourceRootPath', sourceRootPath)
