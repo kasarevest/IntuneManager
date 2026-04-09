@@ -389,6 +389,17 @@ Wire 4 new WinTuner server endpoints to the React UI:
 
 ---
 
+# Backlog
+
+## Bug: App Catalog search does not return results
+- **Component:** `IntuneManagerUI/src/pages/AppCatalog.tsx` — `runSearch()` → `ipcPsSearchWinget()`
+- **Symptom:** Typing in the search bar produces no results (search appears to run but returns nothing)
+- **Priority:** Medium — tackle after app packaging/deployment flow is complete
+
+---
+
+---
+
 # Task: Phase 5 — Azure File Storage for Source/Output Files
 
 ## Objective
