@@ -151,24 +151,32 @@ try {
         }
     } -Compress -Depth 3
 
+    # Check file state before committing so we know what Intune sees
+    $preCommitStatus = Invoke-RestMethod -Method GET -Uri $fileDetailsUri -Headers $graphHeaders
+    Write-Log "Pre-commit uploadState: $($preCommitStatus.uploadState)"
+
     $committed = $false
-    for ($attempt = 1; $attempt -le 10; $attempt++) {
+    for ($attempt = 1; $attempt -le 20; $attempt++) {
         try {
             Invoke-RestMethod -Method POST -Uri "$cfUri/$fileId/commit" `
                 -Headers $graphHeaders -Body $commitJson | Out-Null
             $committed = $true
             break
         } catch {
-            $msg = $_.Exception.Message
-            if ($attempt -lt 10 -and ($msg -match 'not ready' -or $msg -match '400')) {
-                Write-Log "Commit not ready (attempt $attempt/10) — retrying in 3s..."
-                Start-Sleep -Seconds 3
+            # Read the actual Graph API error body (PS only exposes it via ErrorDetails)
+            $errBody = $_.ErrorDetails.Message
+            $errMsg  = if ($errBody) { $errBody } else { $_.Exception.Message }
+            if ($attempt -lt 20 -and ($errMsg -match 'not ready' -or $errMsg -match '400')) {
+                Write-Log "Commit not ready (attempt $attempt/20) state=$($preCommitStatus.uploadState) — retrying in 5s..."
+                Start-Sleep -Seconds 5
+                $preCommitStatus = Invoke-RestMethod -Method GET -Uri $fileDetailsUri -Headers $graphHeaders
+                Write-Log "  uploadState now: $($preCommitStatus.uploadState)"
             } else {
-                throw
+                throw [System.Exception]"Commit failed: $errMsg"
             }
         }
     }
-    if (-not $committed) { throw 'Timed out waiting for Intune to accept file commit' }
+    if (-not $committed) { throw 'Timed out waiting for Intune to accept file commit (20 attempts x 5s)' }
     Write-Log 'File commit initiated'
 
     # ── 7. Poll until Intune confirms commit ───────────────────────────────────
