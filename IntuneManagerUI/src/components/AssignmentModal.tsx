@@ -25,26 +25,31 @@ export default function AssignmentModal({ appId, appName, onDone, onSkip }: Assi
   const loadData = async () => {
     setLoading(true)
     setError(null)
-    try {
-      const [groupsRes, recentRes] = await Promise.all([
-        ipcPsGetAadGroups(),
-        ipcPsGetRecentGroups()
-      ])
-      if (groupsRes.success) setAllGroups(groupsRes.groups)
-      else setError(groupsRes.error ?? 'Failed to load groups')
-      if (recentRes.success) setRecentGroups(recentRes.groups)
-    } catch (e) {
-      const msg = (e as Error).message ?? ''
-      if (msg.includes('503') || msg.includes('upstream') || msg.includes('timed out')) {
-        setError('Service unavailable — the backend may still be starting. Click Retry in a moment.')
-      } else if (msg.includes('401') || msg.includes('403') || msg.includes('Forbidden')) {
-        setError('Permission denied. Reconnect your tenant to grant Group.Read access.')
-      } else {
-        setError(msg.slice(0, 120) || 'Failed to load groups')
+    const [groupsOutcome, recentOutcome] = await Promise.allSettled([
+      ipcPsGetAadGroups(),
+      ipcPsGetRecentGroups()
+    ])
+
+    if (groupsOutcome.status === 'fulfilled' && groupsOutcome.value.success) {
+      setAllGroups(groupsOutcome.value.groups)
+    } else {
+      const raw = groupsOutcome.status === 'rejected'
+        ? (groupsOutcome.reason as Error).message ?? ''
+        : groupsOutcome.value.error ?? ''
+      if (raw.includes('503') || raw.includes('upstream') || raw.includes('timed out')) {
+        setError('Groups service unavailable — click Retry in a moment.')
+      } else if (raw.includes('401') || raw.includes('403') || raw.includes('Forbidden')) {
+        setError('Permission denied. Reconnect your tenant to apply the new Group.Read scope.')
+      } else if (raw) {
+        setError(raw.slice(0, 120))
       }
-    } finally {
-      setLoading(false)
     }
+
+    if (recentOutcome.status === 'fulfilled' && recentOutcome.value.success) {
+      setRecentGroups(recentOutcome.value.groups)
+    }
+
+    setLoading(false)
   }
 
   const defaultIntent = (g: AadGroup | RecentGroup): 'required' | 'available' =>

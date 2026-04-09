@@ -245,10 +245,10 @@ router.get('/api/ps/aad-groups', requireAuth as import('express').RequestHandler
   const args = ['-AccessToken', accessToken]
   if (search) args.push('-Search', String(search))
   try {
-    const result = await runPsScript('Get-AadGroups.ps1', args)
+    const result = await runPsScript('Get-AadGroups.ps1', args, undefined, undefined, undefined, 20000)
     res.json(result.result ?? { success: false, groups: [], error: 'No result from PS script' })
   } catch (e) {
-    res.status(503).json({ success: false, groups: [], error: (e as Error).message })
+    res.json({ success: false, groups: [], error: (e as Error).message })
   }
 })
 
