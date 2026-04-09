@@ -208,7 +208,7 @@ function GroupRow({ group, selected, onToggle, onIntent }: GroupRowProps) {
         type="checkbox"
         checked={isSelected}
         onChange={() => onToggle(group)}
-        style={{ flexShrink: 0, cursor: 'pointer' }}
+        style={{ width: 'auto', flexShrink: 0, cursor: 'pointer' }}
         onClick={e => e.stopPropagation()}
       />
       <span style={s.groupName}>{group.displayName}</span>
