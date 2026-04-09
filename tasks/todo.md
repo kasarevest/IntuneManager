@@ -391,21 +391,14 @@ Wire 4 new WinTuner server endpoints to the React UI:
 
 # Backlog
 
-## Feature: WinGet Integration — package downloads from WinGet library
-- **Description:** Make WinGet available in the Linux container so the AI agent can search and download packages directly from WinGet's library (millions of packages). Currently `search_winget` and `get_latest_version` fail in the container and the AI falls back to Chocolatey.
-- **Symptom:** `Tool: search_winget` / `Tool: get_latest_version` produce no results; AI logs "Winget isn't available in this environment — falling back to Chocolatey"
-- **Scope:**
-  - Install a WinGet-compatible CLI in the Dockerfile (e.g. `winget-cli` for Linux, or use `wingetcreate` / the `Microsoft.WinGet.Client` PS module)
-  - Verify `Search-Winget.ps1` and `Get-LatestVersion.ps1` work against WinGet on Linux
-  - Confirm AI agent `search_winget` + `get_latest_version` tools return results end-to-end
-- **Priority:** HIGH — work on this after upload flow is confirmed working end-to-end
+## ~~Feature: WinGet Integration — package downloads from WinGet library~~ ✓ COMPLETE
+- **Resolution:** Replaced `winget` CLI calls in `Search-Winget.ps1` and `Get-LatestVersion.ps1` with `Winget.CommunityRepository.WingetRepository` (bundled in WinTuner module). No CLI install needed — works in the Linux container out of the box.
+- **Commit:** `a45728d`
 
 ---
 
-## Bug: Packaging — overwrite existing .intunewin in output folder
-- **Description:** If a `.intunewin` for the same app already exists in `/mnt/output`, the packager should overwrite it. Currently the old file may be left in place or the job may fail.
-- **Scope:** `Create-IntuneWin.ps1` — delete any existing `<appName>.intunewin` in `$OutputFolder` before calling `SvRooij.ContentPrep.Packager.CreatePackage`.
-- **Priority:** Medium
+## ~~Bug: Packaging — overwrite existing .intunewin in output folder~~ ✓ COMPLETE
+- **Resolution:** `Create-IntuneWin.ps1` now deletes `<appName>.intunewin` from `$OutputFolder` before calling `CreatePackage`. Commit `a45728d`.
 
 ---
 
