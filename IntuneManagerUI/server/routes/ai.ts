@@ -721,11 +721,18 @@ async function runDeployJob(
     const row = await prisma.appSetting.findUnique({ where: { key } })
     return row?.value || fallback
   }
-  const sourceRoot = await getSettingRow('source_root_path', '/mnt/source')
-  const outputFolder = await getSettingRow('output_folder_path', '/mnt/output')
+  const defaultSource = process.platform === 'linux'
+    ? '/mnt/source'
+    : path.join(__dirname, '..', '..', '..', 'Source')
+  const defaultOutput = process.platform === 'linux'
+    ? '/mnt/output'
+    : path.join(__dirname, '..', '..', '..', 'Output')
+  const sourceRoot   = await getSettingRow('source_root_path', defaultSource)
+  const outputFolder = await getSettingRow('output_folder_path', defaultOutput)
 
+  const pathSep = process.platform === 'linux' ? '/' : '\\'
   const pathContext = `\n\nPATH CONFIGURATION (use these exact paths):
-- Source root: ${sourceRoot}  →  Create app subfolder here (e.g. ${sourceRoot}/SevenZip)
+- Source root: ${sourceRoot}  →  Create app subfolder here (e.g. ${sourceRoot}${pathSep}SevenZip)
 - Output folder: ${outputFolder}  →  Pass this as output_folder to build_package`
 
   const messages: Anthropic.MessageParam[] = [{
@@ -930,11 +937,18 @@ async function runPackageOnlyJob(
     const row = await prisma.appSetting.findUnique({ where: { key } })
     return row?.value || fallback
   }
-  const sourceRoot = await getSettingRow('source_root_path', '/mnt/source')
-  const outputFolder = await getSettingRow('output_folder_path', '/mnt/output')
+  const defaultSource = process.platform === 'linux'
+    ? '/mnt/source'
+    : path.join(__dirname, '..', '..', '..', 'Source')
+  const defaultOutput = process.platform === 'linux'
+    ? '/mnt/output'
+    : path.join(__dirname, '..', '..', '..', 'Output')
+  const sourceRoot   = await getSettingRow('source_root_path', defaultSource)
+  const outputFolder = await getSettingRow('output_folder_path', defaultOutput)
 
+  const pathSep = process.platform === 'linux' ? '/' : '\\'
   const pathContext = `\n\nPATH CONFIGURATION (use these exact paths):
-- Source root: ${sourceRoot}  →  Create app subfolder here (e.g. ${sourceRoot}/SevenZip)
+- Source root: ${sourceRoot}  →  Create app subfolder here (e.g. ${sourceRoot}${pathSep}SevenZip)
 - Output folder: ${outputFolder}  →  Pass this as output_folder to build_package`
 
   const messages: Anthropic.MessageParam[] = [{

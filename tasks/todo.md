@@ -403,8 +403,8 @@ the Container App, and point the app settings at the mount paths.
   - Patches Container App to add volume mounts at `/mnt/source` and `/mnt/output` via REST API
 - [x] **Run the script** — `.\scripts\setup-storage-mounts.ps1` completed successfully
 - [x] **CI integration** — step added to `.github/workflows/deploy-container-app.yml` after `azure/login@v2`; runs `pwsh ./scripts/setup-storage-mounts.ps1` on every deploy (idempotent)
-- [ ] **Update app settings** — set `source_root_path = /mnt/source` and `output_folder_path = /mnt/output` in Settings page (or directly in the DB)
-- [ ] **Verify** — Container App revision shows new volumes; file writes from packaging jobs land in storage account
+- [x] **App settings no longer required** — server defaults to `/mnt/source` / `/mnt/output` on Linux (platform-aware); local Windows dev falls back to relative `Source/` / `Output/` paths as before
+- [x] **Verify** — packaging job produced `GitForWindows.intunewin` (65 MB) at `/mnt/output`; upload flow reached Intune Graph API
 
 ## Side-Effect Audit
 1. Existing packaging jobs that write to `/tmp` will continue to work until app settings are updated — safe; non-destructive
@@ -413,7 +413,7 @@ the Container App, and point the app settings at the mount paths.
 
 ## Post-Flight
 
-**Result: PASS (infrastructure provisioned; CI wired)**
+**Result: PASS (infrastructure provisioned, CI wired, end-to-end packaging verified)**
 
 | Step | Status |
 |---|---|
@@ -421,8 +421,19 @@ the Container App, and point the app settings at the mount paths.
 | File shares `source-files`, `output-files` created | ✓ |
 | Env storage `source-storage`, `output-storage` registered with `cae-intunemanager-prod` | ✓ |
 | Container App volume mounts patched (`/mnt/source`, `/mnt/output`) | ✓ |
+| CI step skips PATCH when volumes already configured (no provisioning conflict) | ✓ |
 | CI step added — runs on every deploy after `azure/login@v2` | ✓ |
-| App settings updated (`source_root_path`, `output_folder_path`) | pending |
+| Storage key masked with `::add-mask::` in CI logs | ✓ |
+| Server defaults to mount paths on Linux without DB settings | ✓ |
+| `Build-Package.ps1` guards fixed — reaches PS7 fallback on Linux | ✓ |
+| `Create-IntuneWin.ps1` ZIP paths aligned with `Upload-App.ps1` | ✓ |
+| Packaging verified end-to-end: `GitForWindows.intunewin` (65 MB) produced | ✓ |
+
+**Bugs fixed during Phase 5 verification:**
+- `Build-Package.ps1`: `GetFolderPath('Desktop')` returns `""` on Linux → `Join-Path` threw before PS7 fallback was reached
+- `Create-IntuneWin.ps1`: wrote to `metadata/Detection.xml` and `IntunePackage.intunewin`; `Upload-App.ps1` expects `IntunePackage/Detection.xml` and `IntunePackage/<name>.intunewin`
+- CI storage step: `az rest PATCH` triggered new revision, conflicting with subsequent registry step — fixed by skipping PATCH when volumes already present
+- `ai.ts` / `ps.ts`: source/output path defaults were wrong in container; now platform-aware (Linux → mounts, Windows → relative paths)
 
 ---
 
