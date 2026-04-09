@@ -106,7 +106,10 @@ export default function AssignmentModal({ appId, appName, onDone, onSkip }: Assi
         </div>
 
         {error && (
-          <div style={{ color: 'var(--error)', fontSize: 12, marginBottom: 10 }}>{error}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span style={{ color: 'var(--error)', fontSize: 12, flex: 1 }}>{error}</span>
+            <button className="btn-ghost" style={{ fontSize: 11 }} onClick={loadData}>Retry</button>
+          </div>
         )}
 
         <input
@@ -181,22 +184,34 @@ function GroupRow({ group, selected, onToggle, onIntent }: GroupRowProps) {
   const assignment = selected.get(group.id)
 
   return (
-    <div style={s.row}>
+    <div
+      style={{ ...s.row, background: isSelected ? 'var(--bg-700)' : undefined }}
+      onClick={() => onToggle(group)}
+    >
       <input
         type="checkbox"
         checked={isSelected}
         onChange={() => onToggle(group)}
         style={{ flexShrink: 0, cursor: 'pointer' }}
+        onClick={e => e.stopPropagation()}
       />
       <span style={s.groupName}>{group.displayName}</span>
-      <span style={{ ...s.badge, background: group.groupType === 'device' ? '#1e3a5f' : 'var(--surface-200)' }}>
+      <span style={{ ...s.badge, background: group.groupType === 'device' ? '#1e3a5f' : 'var(--bg-700)' }}>
         {group.groupType}
       </span>
       {isSelected && (
         <select
           value={assignment?.intent ?? 'available'}
           onChange={e => onIntent(group.id, e.target.value as 'required' | 'available')}
-          style={{ fontSize: 11, padding: '2px 4px', flexShrink: 0 }}
+          style={{
+            fontSize: 11,
+            padding: '2px 4px',
+            flexShrink: 0,
+            background: 'var(--bg-800)',
+            color: 'var(--text-100)',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+          }}
           onClick={e => e.stopPropagation()}
         >
           <option value="required">Required</option>
