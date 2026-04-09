@@ -144,7 +144,6 @@ try {
             macKey               = $encInfo.MacKey
             initializationVector = $encInfo.InitializationVector
             mac                  = $encInfo.Mac
-            macAlgorithm         = if ($encInfo.MacAlgorithm) { $encInfo.MacAlgorithm } else { 'SHA256' }
             profileIdentifier    = $encInfo.ProfileIdentifier
             fileDigest           = $encInfo.FileDigest
             fileDigestAlgorithm  = $encInfo.FileDigestAlgorithm
