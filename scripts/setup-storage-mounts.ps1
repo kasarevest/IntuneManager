@@ -137,7 +137,21 @@ foreach ($entry in @(
 }
 
 # ── 5. Patch Container App to add volumes + volume mounts ─────────────────────
-Log "Patching Container App with volume mounts..."
+# Skip the PATCH if both volumes are already configured. The PATCH triggers a
+# new Container App revision (provisioning operation) which conflicts with the
+# subsequent registry/deploy steps in CI. Volumes persist across deploys, so
+# we only need to PATCH once.
+$currentVolumes = @()
+if ($caJson.properties.template.PSObject.Properties['volumes'] -and $caJson.properties.template.volumes) {
+    $currentVolumes = @($caJson.properties.template.volumes)
+}
+$hasSource = $currentVolumes | Where-Object { $_.name -eq $SOURCE_ENV }
+$hasOutput = $currentVolumes | Where-Object { $_.name -eq $OUTPUT_ENV }
+
+if ($hasSource -and $hasOutput) {
+    LogOk "Volume mounts already configured ($MOUNT_SOURCE, $MOUNT_OUTPUT) - skipping PATCH."
+} else {
+    Log "Patching Container App with volume mounts..."
 
 # Work on the full properties object (REST PATCH preserves unset fields)
 $patch = $caJson | ConvertTo-Json -Depth 30 | ConvertFrom-Json
@@ -199,6 +213,7 @@ try {
 } finally {
     Remove-Item -Path $tmpFile -Force -ErrorAction SilentlyContinue
 }
+} # end else (volumes not yet configured)
 
 # ── 6. Summary ────────────────────────────────────────────────────────────────
 Log ""
