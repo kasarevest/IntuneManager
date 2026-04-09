@@ -21,6 +21,8 @@
   --error: #ef4444;
   --info: #38bdf8;
   --border: #334155;
+  --surface-100: #1e293b;
+  --surface-200: #243447;
   --radius: 6px;
   --radius-lg: 10px;
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;

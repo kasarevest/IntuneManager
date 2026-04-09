@@ -172,6 +172,9 @@ export const ipcAiCancel = (jobId: string): Promise<void> =>
 export const ipcPsListIntunewinPackages = (): Promise<ListPackagesRes> =>
   get('/api/ps/list-packages')
 
+export const ipcPsDeletePackage = (intunewinPath: string): Promise<{ success: boolean; error?: string }> =>
+  del('/api/ps/delete-package', { intunewinPath })
+
 export const ipcPsGetDevices = (): Promise<GetDevicesRes> =>
   get('/api/ps/devices')
 

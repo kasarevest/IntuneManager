@@ -234,6 +234,14 @@ router.get('/api/ps/list-packages', requireAuth as import('express').RequestHand
   res.json({ success: true, packages: [] })
 })
 
+// DELETE /api/ps/delete-package
+router.delete('/api/ps/delete-package', requireAuth as import('express').RequestHandler, async (req, res) => {
+  const { intunewinPath } = req.body as { intunewinPath: string }
+  const result = await runPsScript('Delete-IntunewinPackage.ps1', ['-IntunewinPath', intunewinPath])
+  if (result.result) { res.json(result.result); return }
+  res.json({ success: false, error: result.rawStderr.join(' | ') || 'Delete failed' })
+})
+
 // POST /api/ps/trigger-windows-update
 router.post('/api/ps/trigger-windows-update', requireAuth as import('express').RequestHandler, async (req, res) => {
   const { deviceId } = req.body as { deviceId: string }

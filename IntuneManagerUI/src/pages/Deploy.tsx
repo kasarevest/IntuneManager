@@ -5,7 +5,7 @@ import LogPanel from '../components/LogPanel'
 import ProgressStepper from '../components/ProgressStepper'
 import type { LogEntry, DeployJob } from '../types/app'
 import type { IntunewinPackage } from '../types/ipc'
-import { ipcAiPackageOnly, ipcAiUploadOnly, ipcAiCancel, ipcPsListIntunewinPackages, ipcPsWtPackage, ipcPsWtDeploy, ipcSettingsGet } from '../lib/api'
+import { ipcAiPackageOnly, ipcAiUploadOnly, ipcAiCancel, ipcPsListIntunewinPackages, ipcPsDeletePackage, ipcPsWtPackage, ipcPsWtDeploy, ipcSettingsGet } from '../lib/api'
 import { onJobLog, onJobPhaseChange, onJobComplete, onJobError, onJobPackageComplete } from '../lib/sse'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -582,6 +582,7 @@ export default function Deploy() {
                     pkg={pkg}
                     onDeploy={() => startUploadOnlyJob(pkg.intunewinPath, pkg.packageSettings)}
                     onDetails={() => setSelectedPkg(pkg)}
+                    onDelete={path => setPackages(prev => prev.filter(p => p.intunewinPath !== path))}
                     disabled={isRunning}
                   />
                 ))}
@@ -612,16 +613,28 @@ interface PackageCardProps {
   pkg: IntunewinPackage
   onDeploy: () => void
   onDetails: () => void
+  onDelete: (intunewinPath: string) => void
   disabled?: boolean
 }
 
-function PackageCard({ pkg, onDeploy, onDetails, disabled }: PackageCardProps) {
+function PackageCard({ pkg, onDeploy, onDetails, onDelete, disabled }: PackageCardProps) {
+  const [deleting, setDeleting] = React.useState(false)
   const ps = pkg.packageSettings
   const displayName = ps ? psStr(ps.app_name, pkg.appName) : pkg.appName
   const publisher = ps ? psStr(ps.publisher) : '—'
   const description = ps ? psStr(ps.description, 'No description available') : 'No description available'
   const version = ps ? (psStr(ps.app_version, '') || null) : null
   const initials = getInitials(displayName)
+
+  async function handleDelete() {
+    setDeleting(true)
+    const res = await ipcPsDeletePackage(pkg.intunewinPath)
+    if (res.success) {
+      onDelete(pkg.intunewinPath)
+    } else {
+      setDeleting(false)
+    }
+  }
 
   return (
     <div style={cardStyles.card}>
@@ -654,6 +667,14 @@ function PackageCard({ pkg, onDeploy, onDetails, disabled }: PackageCardProps) {
           onClick={onDetails}
         >
           Details
+        </button>
+        <button
+          className="btn-ghost"
+          style={{ fontSize: 12, padding: '6px 10px', color: 'var(--error)' }}
+          onClick={handleDelete}
+          disabled={deleting || disabled}
+        >
+          {deleting ? '…' : 'Delete'}
         </button>
       </div>
     </div>
