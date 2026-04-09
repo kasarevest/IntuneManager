@@ -222,6 +222,7 @@ function GroupRow({ group, selected, onToggle, onIntent }: GroupRowProps) {
           style={{
             fontSize: 11,
             padding: '2px 4px',
+            width: 'auto',
             flexShrink: 0,
             background: 'var(--bg-800)',
             color: 'var(--text-100)',
