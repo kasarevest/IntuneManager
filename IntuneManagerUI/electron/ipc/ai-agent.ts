@@ -8,6 +8,16 @@ import { runPsScript } from './ps-bridge'
 import path from 'path'
 import fs from 'fs'
 
+// Per-script timeout budgets for AI agent tool calls
+const SCRIPT_TIMEOUTS = {
+  search:    60_000,   // winget/chocolatey search
+  version:   30_000,   // get-latest-version
+  download: 300_000,   // installer download (large files)
+  build:    180_000,   // IntuneWinAppUtil.exe packaging
+  upload:   600_000,   // chunked blob upload to Intune
+  graph:     60_000,   // single Graph API call
+} as const
+
 // ─── Claude client factory ────────────────────────────────────────────────────
 // Prefers AWS Bedrock (SSO) when aws_region is configured in settings.
 // Falls back to direct Anthropic API key when Bedrock is not configured.
@@ -304,19 +314,19 @@ async function executeToolCall(
   switch (toolName) {
     case 'search_winget': {
       const result = await runPsScript('Search-Winget.ps1', ['-Query', String(input.query)],
-        (msg, level) => log(msg, level, 'ps'))
+        (msg, level) => log(msg, level, 'ps'), undefined, false, SCRIPT_TIMEOUTS.search)
       return result.result ?? { success: false, results: [] }
     }
 
     case 'search_chocolatey': {
       const result = await runPsScript('Search-Chocolatey.ps1', ['-Query', String(input.query)],
-        (msg, level) => log(msg, level, 'ps'))
+        (msg, level) => log(msg, level, 'ps'), undefined, false, SCRIPT_TIMEOUTS.search)
       return result.result ?? { success: false, results: [] }
     }
 
     case 'get_latest_version': {
       const result = await runPsScript('Get-LatestVersion.ps1', ['-WingetId', String(input.winget_id)],
-        (msg, level) => log(msg, level, 'ps'))
+        (msg, level) => log(msg, level, 'ps'), undefined, false, SCRIPT_TIMEOUTS.version)
       return result.result ?? { version: null }
     }
 
@@ -324,7 +334,7 @@ async function executeToolCall(
       const args = ['-Url', String(input.url), '-OutputPath', String(input.output_path)]
       if (input.expected_sha256) args.push('-ExpectedSHA256', String(input.expected_sha256))
       const result = await runPsScript('Download-File.ps1', args,
-        (msg, level) => log(msg, level, 'ps'))
+        (msg, level) => log(msg, level, 'ps'), undefined, false, SCRIPT_TIMEOUTS.download)
       return result.result ?? { success: false, error: 'Download failed' }
     }
 
@@ -394,7 +404,7 @@ async function executeToolCall(
         '-OutputFolder', String(input.output_folder)
       ]
       if (toolPath) args.push('-ToolPath', toolPath)
-      const result = await runPsScript('Build-Package.ps1', args, (msg, level) => log(msg, level, 'ps'))
+      const result = await runPsScript('Build-Package.ps1', args, (msg, level) => log(msg, level, 'ps'), undefined, false, SCRIPT_TIMEOUTS.build)
       return result.result ?? { success: false, error: 'Build failed' }
     }
 
@@ -460,7 +470,7 @@ async function executeToolCall(
       let result: Awaited<ReturnType<typeof runPsScript>>
       try {
         result = await runPsScript('New-Win32App.ps1', ['-BodyJsonPath', tmpJsonPath],
-          (msg, level) => log(msg, level, 'ps'))
+          (msg, level) => log(msg, level, 'ps'), undefined, false, SCRIPT_TIMEOUTS.graph)
       } finally {
         try { fs.unlinkSync(tmpJsonPath) } catch { /* ignore */ }
       }
@@ -470,7 +480,7 @@ async function executeToolCall(
     case 'upload_to_intune': {
       const result = await runPsScript('Upload-App.ps1',
         ['-AppId', String(input.app_id), '-IntunewinPath', String(input.intunewin_path)],
-        (msg, level) => log(msg, level, 'ps'))
+        (msg, level) => log(msg, level, 'ps'), undefined, false, SCRIPT_TIMEOUTS.upload)
       return result.result ?? { success: false, error: 'Upload failed' }
     }
 

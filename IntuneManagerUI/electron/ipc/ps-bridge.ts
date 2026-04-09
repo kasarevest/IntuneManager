@@ -9,6 +9,18 @@ import type { Database } from 'better-sqlite3'
 const PS_SCRIPTS_DIR = path.join(app.getAppPath(), 'electron', 'ps-scripts')
   .replace('app.asar', 'app.asar.unpacked')
 
+// Per-script timeout budgets (ms)
+const SCRIPT_TIMEOUTS = {
+  search:    60_000,   // winget/chocolatey search
+  version:   30_000,   // get-latest-version
+  download: 300_000,   // installer download (large files)
+  build:    180_000,   // IntuneWinAppUtil.exe packaging
+  upload:   600_000,   // chunked blob upload to Intune
+  graph:     60_000,   // single Graph API call
+  auth:     300_000,   // interactive browser login
+  default:  120_000,   // everything else
+} as const
+
 // ─── Core PS runner ───────────────────────────────────────────────────────────
 
 interface PsResult {
@@ -24,7 +36,8 @@ function runPsScript(
   args: string[],
   onLogLine?: (line: string, level: string) => void,
   signal?: AbortSignal,
-  interactive?: boolean
+  interactive?: boolean,
+  timeoutMs: number = SCRIPT_TIMEOUTS.default
 ): Promise<PsResult> {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(PS_SCRIPTS_DIR, scriptName)
@@ -72,21 +85,37 @@ function runPsScript(
       for (const line of lines) onLogLine?.(line, 'DEBUG')
     })
 
-    proc.on('close', code => resolve({
-      exitCode: code ?? -1,
-      result: resultJson,
-      logLines,
-      rawStdout: stdoutLines,
-      rawStderr: stderrLines
-    }))
-
-    proc.on('error', err => reject(new Error(`Failed to spawn powershell.exe: ${err.message}`)))
-
-    signal?.addEventListener('abort', () => {
+    const killProc = () => {
       try {
         proc.kill()
         spawn('taskkill', ['/pid', String(proc.pid), '/f', '/t'], { windowsHide: true })
       } catch { /* ignore */ }
+    }
+
+    const timer = setTimeout(() => {
+      killProc()
+      reject(new Error(`Script timed out after ${timeoutMs / 1000}s: ${scriptName}`))
+    }, timeoutMs)
+
+    proc.on('close', code => {
+      clearTimeout(timer)
+      resolve({
+        exitCode: code ?? -1,
+        result: resultJson,
+        logLines,
+        rawStdout: stdoutLines,
+        rawStderr: stderrLines
+      })
+    })
+
+    proc.on('error', err => {
+      clearTimeout(timer)
+      reject(new Error(`Failed to spawn powershell.exe: ${err.message}`))
+    })
+
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer)
+      killProc()
     })
   })
 }
@@ -117,7 +146,7 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
   // Tenant connect — interactive=true removes -NonInteractive so browser can open
   ipcMain.handle('ipc:ps:connect-tenant', async (_event, req: { useDeviceCode?: boolean }) => {
     const args = req.useDeviceCode ? ['-DeviceCode'] : []
-    const result = await runPsScript('Connect-Tenant.ps1', args, undefined, undefined, true)
+    const result = await runPsScript('Connect-Tenant.ps1', args, undefined, undefined, true, SCRIPT_TIMEOUTS.auth)
     const res = result.result ?? { success: false, error: `No result from PS script. Stderr: ${result.rawStderr.join(' | ')}` }
     // Persist successful connection to DB so UI can restore state across navigations
     if (res.success) {
@@ -208,7 +237,7 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
 
     const result = await runPsScript('Download-File.ps1', args, (msg, level) => {
       if (req.jobId) sendToRenderer('job:log', { jobId: req.jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
-    })
+    }, undefined, false, SCRIPT_TIMEOUTS.download)
     return result.result ?? { success: false, error: 'Download failed' }
   })
 
@@ -221,7 +250,7 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
 
     const result = await runPsScript('Build-Package.ps1', args, (msg, level) => {
       if (req.jobId) sendToRenderer('job:log', { jobId: req.jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
-    })
+    }, undefined, false, SCRIPT_TIMEOUTS.build)
     return result.result ?? { success: false, error: 'Build failed' }
   })
 
@@ -233,7 +262,7 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
 
     const result = await runPsScript('Upload-App.ps1', args, (msg, level) => {
       if (req.jobId) sendToRenderer('job:log', { jobId: req.jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
-    })
+    }, undefined, false, SCRIPT_TIMEOUTS.upload)
     return result.result ?? { success: false, error: 'Upload failed' }
   })
 
@@ -242,7 +271,7 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
     const bodyJson = JSON.stringify(req.body)
     const result = await runPsScript('New-Win32App.ps1', ['-BodyJson', bodyJson], (msg, level) => {
       if (req.jobId) sendToRenderer('job:log', { jobId: req.jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
-    })
+    }, undefined, false, SCRIPT_TIMEOUTS.graph)
     return result.result ?? { success: false, error: 'Create app failed' }
   })
 
@@ -251,7 +280,7 @@ export function registerPsBridgeHandlers(win: BrowserWindow, db: Database): void
     const bodyJson = JSON.stringify(req.body)
     const result = await runPsScript('Update-Win32App.ps1', ['-AppId', req.appId, '-BodyJson', bodyJson], (msg, level) => {
       if (req.jobId) sendToRenderer('job:log', { jobId: req.jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
-    })
+    }, undefined, false, SCRIPT_TIMEOUTS.graph)
     return result.result ?? { success: false, error: 'Update app failed' }
   })
 

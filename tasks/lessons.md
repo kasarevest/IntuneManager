@@ -900,6 +900,41 @@ The route handler had no try/catch around the `createMany` call. When Prisma thr
 
 ---
 
+## Lesson 016 — Electron PS Bridge: Timeout Parity with Server-Side (2026-04-09)
+
+### Keywords
+`electron`, `ps-bridge`, `timeout`, `runPsScript`, `killProc`, `SCRIPT_TIMEOUTS`, `ai-agent`, `executeToolCall`, `hang`, `spinner`, `no-recovery`
+
+### What Happened
+
+Issue #002 — the electron-side `runPsScript()` had no timeout mechanism while the server-side version had been fixed. Long-running PS scripts (download = 300s, upload = 600s) could hang indefinitely. The user sees a permanently spinning job UI with no error and no way to cancel except killing the app.
+
+### Anti-Pattern (Why It Happened)
+
+**Partial fix syndrome** — the server-side was fixed in the same session that discovered the problem, but the electron-side (identical structure, different file) was not. When fixing a shared pattern across two codebases (server + electron), always grep for all copies of the pattern before closing the issue.
+
+### Heuristic (Prevention)
+
+1. **When fixing a shared function like `runPsScript`, grep for all copies.** `electron/ipc/ps-bridge.ts` and `server/services/ps-bridge.ts` are parallel implementations — any change to one likely applies to the other.
+
+2. **`SCRIPT_TIMEOUTS` constants should be local to each file** (not exported). `ai-agent.ts` imports `runPsScript` but not the timeout map — redeclare locally. Exporting constants that consumers don't need widens the API surface unnecessarily.
+
+3. **IPC handlers that call long-running scripts must pass explicit timeouts.** A bare `runPsScript('Upload-App.ps1', args, ...)` without a timeout will hang indefinitely on the electron side. Add the timeout as the 6th positional arg.
+
+4. **The timeout error message pattern** `Script timed out after Xs: <scriptName>` should be consistent across server and electron so UI error handling can match on the same substring.
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---------|----------------|
+| Electron `runPsScript` signature | `(scriptName, args, onLogLine?, signal?, interactive?, timeoutMs = 120_000)` — 6th positional |
+| `killProc()` helper | Shared between timeout and abort signal — avoids duplicating `proc.kill()` + `taskkill /pid /f /t` |
+| `clearTimeout(timer)` placement | Must be in `proc.on('close')`, `proc.on('error')`, AND `signal.abort` handler — otherwise timer fires after process already resolved/rejected |
+| SCRIPT_TIMEOUTS electron IPC handlers | search=60s, version=30s, download=300s, build=180s, upload=600s, graph=60s, auth=300s, default=120s |
+| ai-agent.ts tool timeouts | 7 calls in `executeToolCall`: search × 2, version, download, build, create (graph), upload |
+
+---
+
 ## Lesson Template (copy for new entries)
 
 ```

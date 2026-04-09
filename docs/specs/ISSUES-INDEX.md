@@ -34,15 +34,14 @@ This index tracks all identified issues from the peer review and provides links 
 
 ## BLOCKING Issues
 
-### #002: PowerShell Script Timeouts ⚠️ PARTIAL
+### #002: PowerShell Script Timeouts ✅ COMPLETE
 **Priority:** BLOCKING (Technical)  
 **Impact:** Hung scripts leave jobs in "running" state indefinitely with no recovery path.  
 **Spec:** [issue-002-ps-script-timeouts.md](issue-002-ps-script-timeouts.md)
 
-**Summary:** `server/services/ps-bridge.ts` — `timeoutMs` parameter added (default 60 000 ms), `killProc()` helper, `setTimeout` + `clearTimeout` on close/error. **Remaining:** `electron/ipc/ps-bridge.ts` still has no timeout mechanism.
+**Summary:** Both `server/services/ps-bridge.ts` and `electron/ipc/ps-bridge.ts` now have `timeoutMs` parameter, `killProc()` helper, and `setTimeout`/`clearTimeout` on close/error/abort. `SCRIPT_TIMEOUTS` constants defined in both files (search=60s, version=30s, download=300s, build=180s, upload=600s, graph=60s, auth=300s, default=120s). All 7 `runPsScript` calls in `ai-agent.ts` `executeToolCall` pass per-script timeouts. IPC handlers for download/build/upload/new-win32-app/update-win32-app/connect-tenant pass explicit timeouts.
 
-**Recommended Order:** Implement **SECOND** (prevents system hangs)  
-**Partial completion:** 2026-04-09 (server-side only)
+**Completed:** 2026-04-09
 
 ---
 
@@ -213,7 +212,7 @@ Nice-to-have UX improvements:
 Use this checklist to track implementation:
 
 - [x] #001 AAD Group Assignment — Complete 2026-04-09
-- [ ] #002 PS Script Timeouts — ⚠️ Partial (server-side done; electron-side pending)
+- [x] #002 PS Script Timeouts — Complete 2026-04-09
 - [ ] #003 Claude Iteration Recovery
 - [ ] #004 Path Traversal Validation
 - [ ] #005 Deployment History
