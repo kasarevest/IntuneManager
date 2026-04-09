@@ -401,7 +401,8 @@ the Container App, and point the app settings at the mount paths.
   - Creates file shares `source-files` and `output-files` (100 GiB each)
   - Registers shares with Container Apps environment (`source-storage`, `output-storage`)
   - Patches Container App to add volume mounts at `/mnt/source` and `/mnt/output` via REST API
-- [ ] **Run the script** — `.\scripts\setup-storage-mounts.ps1` (requires `az login`)
+- [x] **Run the script** — `.\scripts\setup-storage-mounts.ps1` completed successfully
+- [x] **CI integration** — step added to `.github/workflows/deploy-container-app.yml` after `azure/login@v2`; runs `pwsh ./scripts/setup-storage-mounts.ps1` on every deploy (idempotent)
 - [ ] **Update app settings** — set `source_root_path = /mnt/source` and `output_folder_path = /mnt/output` in Settings page (or directly in the DB)
 - [ ] **Verify** — Container App revision shows new volumes; file writes from packaging jobs land in storage account
 
@@ -411,7 +412,17 @@ the Container App, and point the app settings at the mount paths.
 3. Storage account key stored in Container Apps environment — needed for SMB mount; same model as KV secrets
 
 ## Post-Flight
-_Pending run of setup script._
+
+**Result: PASS (infrastructure provisioned; CI wired)**
+
+| Step | Status |
+|---|---|
+| Storage account `stintunemgrprod` found | ✓ |
+| File shares `source-files`, `output-files` created | ✓ |
+| Env storage `source-storage`, `output-storage` registered with `cae-intunemanager-prod` | ✓ |
+| Container App volume mounts patched (`/mnt/source`, `/mnt/output`) | ✓ |
+| CI step added — runs on every deploy after `azure/login@v2` | ✓ |
+| App settings updated (`source_root_path`, `output_folder_path`) | pending |
 
 ---
 

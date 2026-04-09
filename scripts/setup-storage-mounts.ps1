@@ -83,6 +83,7 @@ $ST_KEY = az storage account keys list `
     --output tsv
 
 if (-not $ST_KEY) { throw "Could not retrieve key for storage account '$ST_NAME'." }
+Write-Host "::add-mask::$ST_KEY"   # mask key in GitHub Actions logs
 LogOk "Storage key retrieved."
 
 # ── 2. Create file shares (idempotent) ────────────────────────────────────────

@@ -88,6 +88,17 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      # ── Ensure Azure File Storage mounts (idempotent) ───────────────────────
+      # Runs setup-storage-mounts.ps1 on every deploy to guarantee the Azure
+      # File Shares and Container App volume mounts (/mnt/source, /mnt/output)
+      # are in place before the new revision starts. The script is idempotent
+      # -- it creates the storage account and shares if absent, skips if they
+      # already exist, and exits non-zero on any real failure so a broken
+      # storage config blocks deploy rather than silently proceeding.
+      - name: Ensure Azure File Storage mounts
+        shell: pwsh
+        run: ./scripts/setup-storage-mounts.ps1
+
       - name: Configure GHCR registry credentials on Container App
         run: |
           # Refresh GHCR pull credentials before each deploy so Container Apps
