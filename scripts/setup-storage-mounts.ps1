@@ -43,7 +43,7 @@ $SOURCE_ENV   = 'source-storage'        # Container Apps environment storage nam
 $OUTPUT_ENV   = 'output-storage'
 $MOUNT_SOURCE = '/mnt/source'
 $MOUNT_OUTPUT = '/mnt/output'
-$API_VER      = '2024-03-01'
+$API_VER      = '2025-01-01'
 
 function Log([string]$msg) { Write-Host "[setup-storage] $msg" }
 function LogOk([string]$msg) { Write-Host "[setup-storage] OK — $msg" -ForegroundColor Green }
