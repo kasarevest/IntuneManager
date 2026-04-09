@@ -57,6 +57,13 @@ try {
     Write-Log "  EntryPoint: $setupFile"
     Write-Log "  Output:     $OutputFolder"
 
+    # ── Delete existing .intunewin for this app (overwrite) ──────────────────
+    $existingFile = Join-Path $OutputFolder "${appName}.intunewin"
+    if (Test-Path $existingFile) {
+        Remove-Item $existingFile -Force
+        Write-Log "Removed existing package: $existingFile"
+    }
+
     # ── Load SvRooij.ContentPrep from the installed WinTuner module ───────────
     $wtModule = Get-Module -ListAvailable WinTuner |
         Sort-Object Version -Descending | Select-Object -First 1
