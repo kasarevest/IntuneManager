@@ -391,6 +391,17 @@ Wire 4 new WinTuner server endpoints to the React UI:
 
 # Backlog
 
+## Feature: WinGet Integration — package downloads from WinGet library
+- **Description:** Make WinGet available in the Linux container so the AI agent can search and download packages directly from WinGet's library (millions of packages). Currently `search_winget` and `get_latest_version` fail in the container and the AI falls back to Chocolatey.
+- **Symptom:** `Tool: search_winget` / `Tool: get_latest_version` produce no results; AI logs "Winget isn't available in this environment — falling back to Chocolatey"
+- **Scope:**
+  - Install a WinGet-compatible CLI in the Dockerfile (e.g. `winget-cli` for Linux, or use `wingetcreate` / the `Microsoft.WinGet.Client` PS module)
+  - Verify `Search-Winget.ps1` and `Get-LatestVersion.ps1` work against WinGet on Linux
+  - Confirm AI agent `search_winget` + `get_latest_version` tools return results end-to-end
+- **Priority:** HIGH — work on this after upload flow is confirmed working end-to-end
+
+---
+
 ## Bug: App Catalog search does not return results
 - **Component:** `IntuneManagerUI/src/pages/AppCatalog.tsx` — `runSearch()` → `ipcPsSearchWinget()`
 - **Symptom:** Typing in the search bar produces no results (search appears to run but returns nothing)
