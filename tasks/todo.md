@@ -402,10 +402,8 @@ Wire 4 new WinTuner server endpoints to the React UI:
 
 ---
 
-## Bug: App Catalog search does not return results
-- **Component:** `IntuneManagerUI/src/pages/AppCatalog.tsx` — `runSearch()` → `ipcPsSearchWinget()`
-- **Symptom:** Typing in the search bar produces no results (search appears to run but returns nothing)
-- **Priority:** Medium — tackle after app packaging/deployment flow is complete
+## ~~Bug: App Catalog search does not return results~~ ✓ COMPLETE
+- **Resolution:** Same root cause as WinGet integration — `Search-Winget.ps1` was calling `winget` CLI which is unavailable on Linux. Fixed in commit `a45728d` (WingetRepository replaces CLI).
 
 ---
 
