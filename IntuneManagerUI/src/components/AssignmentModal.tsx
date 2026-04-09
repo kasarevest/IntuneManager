@@ -34,7 +34,14 @@ export default function AssignmentModal({ appId, appName, onDone, onSkip }: Assi
       else setError(groupsRes.error ?? 'Failed to load groups')
       if (recentRes.success) setRecentGroups(recentRes.groups)
     } catch (e) {
-      setError((e as Error).message)
+      const msg = (e as Error).message ?? ''
+      if (msg.includes('503') || msg.includes('upstream') || msg.includes('timed out')) {
+        setError('Service unavailable — the backend may still be starting. Click Retry in a moment.')
+      } else if (msg.includes('401') || msg.includes('403') || msg.includes('Forbidden')) {
+        setError('Permission denied. Reconnect your tenant to grant Group.Read access.')
+      } else {
+        setError(msg.slice(0, 120) || 'Failed to load groups')
+      }
     } finally {
       setLoading(false)
     }
@@ -185,7 +192,11 @@ function GroupRow({ group, selected, onToggle, onIntent }: GroupRowProps) {
 
   return (
     <div
-      style={{ ...s.row, background: isSelected ? 'var(--bg-700)' : undefined }}
+      style={{
+        ...s.row,
+        background: isSelected ? 'rgba(59,130,246,0.15)' : undefined,
+        outline: isSelected ? '1px solid rgba(59,130,246,0.4)' : undefined,
+      }}
       onClick={() => onToggle(group)}
     >
       <input

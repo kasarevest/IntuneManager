@@ -19,7 +19,8 @@ export function runPsScript(
   args: string[],
   onLogLine?: (line: string, level: string) => void,
   signal?: AbortSignal,
-  interactive?: boolean
+  interactive?: boolean,
+  timeoutMs: number = 60000
 ): Promise<PsResult> {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(PS_SCRIPTS_DIR, scriptName)
@@ -70,17 +71,7 @@ export function runPsScript(
       for (const line of lines) onLogLine?.(line, 'DEBUG')
     })
 
-    proc.on('close', code => resolve({
-      exitCode: code ?? -1,
-      result: resultJson,
-      logLines,
-      rawStdout: stdoutLines,
-      rawStderr: stderrLines
-    }))
-
-    proc.on('error', err => reject(new Error(`Failed to spawn powershell.exe: ${err.message}`)))
-
-    signal?.addEventListener('abort', () => {
+    const killProc = () => {
       try {
         proc.kill()
         if (process.platform === 'win32') {
@@ -89,6 +80,32 @@ export function runPsScript(
           spawn('kill', ['-9', String(proc.pid)])
         }
       } catch { /* ignore */ }
+    }
+
+    const timer = setTimeout(() => {
+      killProc()
+      reject(new Error(`Script timed out after ${timeoutMs / 1000}s: ${scriptName}`))
+    }, timeoutMs)
+
+    proc.on('close', code => {
+      clearTimeout(timer)
+      resolve({
+        exitCode: code ?? -1,
+        result: resultJson,
+        logLines,
+        rawStdout: stdoutLines,
+        rawStderr: stderrLines
+      })
+    })
+
+    proc.on('error', err => {
+      clearTimeout(timer)
+      reject(new Error(`Failed to spawn powershell: ${err.message}`))
+    })
+
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer)
+      killProc()
     })
   })
 }

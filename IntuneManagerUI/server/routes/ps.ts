@@ -244,8 +244,12 @@ router.get('/api/ps/aad-groups', requireAuth as import('express').RequestHandler
   const { search } = req.query
   const args = ['-AccessToken', accessToken]
   if (search) args.push('-Search', String(search))
-  const result = await runPsScript('Get-AadGroups.ps1', args)
-  res.json(result.result ?? { success: false, groups: [], error: 'No result from PS script' })
+  try {
+    const result = await runPsScript('Get-AadGroups.ps1', args)
+    res.json(result.result ?? { success: false, groups: [], error: 'No result from PS script' })
+  } catch (e) {
+    res.status(503).json({ success: false, groups: [], error: (e as Error).message })
+  }
 })
 
 // GET /api/ps/recent-groups — top 5 most-used groups from assignment history
