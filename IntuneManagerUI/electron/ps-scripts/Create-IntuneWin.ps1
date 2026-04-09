@@ -167,14 +167,16 @@ try {
         $true   # leaveOpen = true so we can ToArray() after dispose
     )
 
-    # Entry 1: encrypted blob (no compression — it's already encrypted binary)
-    $blobEntry   = $archive.CreateEntry('IntunePackage.intunewin', [System.IO.Compression.CompressionLevel]::NoCompression)
+    # Entry 1: encrypted blob at IntunePackage/<name>.intunewin
+    # Upload-App.ps1 reads <FileName> from Detection.xml and looks for
+    # IntunePackage/$encryptedFileName — path must match exactly.
+    $blobEntry   = $archive.CreateEntry("IntunePackage/$outputName", [System.IO.Compression.CompressionLevel]::NoCompression)
     $blobStream  = $blobEntry.Open()
     $blobStream.Write($encryptedBytes, 0, $encryptedBytes.Length)
     $blobStream.Dispose()
 
-    # Entry 2: Detection.xml inside metadata/ subfolder
-    $xmlEntry    = $archive.CreateEntry('metadata/Detection.xml', [System.IO.Compression.CompressionLevel]::Optimal)
+    # Entry 2: Detection.xml inside IntunePackage/ (Upload-App.ps1: GetEntry('IntunePackage/Detection.xml'))
+    $xmlEntry    = $archive.CreateEntry('IntunePackage/Detection.xml', [System.IO.Compression.CompressionLevel]::Optimal)
     $xmlStream   = $xmlEntry.Open()
     $xmlStream.Write($xmlBytes, 0, $xmlBytes.Length)
     $xmlStream.Dispose()
