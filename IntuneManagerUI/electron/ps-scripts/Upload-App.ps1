@@ -197,7 +197,11 @@ try {
     Write-Log 'File committed successfully'
 
     # ── 8. Associate committed content version with the app ───────────────────
-    $patchJson = ConvertTo-Json @{ committedContentVersion = $versionId } -Compress
+    # @odata.type is required by Graph API when PATCHing a typed resource
+    $patchJson = ConvertTo-Json @{
+        '@odata.type'            = '#microsoft.graph.win32LobApp'
+        committedContentVersion  = $versionId
+    } -Compress
     Invoke-RestMethod -Method PATCH `
         -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$AppId" `
         -Headers $graphHeaders -Body $patchJson | Out-Null
