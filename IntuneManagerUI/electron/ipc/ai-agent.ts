@@ -5,6 +5,7 @@ import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { decryptSetting } from './settings'
 import { runPsScript } from './ps-bridge'
+import { validatePathInBase, PathTraversalError } from '../utils/path-validator'
 import path from 'path'
 import fs from 'fs'
 
@@ -311,6 +312,10 @@ async function executeToolCall(
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
   }
 
+  // Source root used to validate AI-provided paths — must resolve within this directory
+  const sourceRootRow = db.prepare("SELECT value FROM app_settings WHERE key = 'source_root_path'").get() as { value: string } | undefined
+  const sourceRoot = sourceRootRow?.value || path.join(app.getAppPath(), '..', '..', '..', 'Source')
+
   switch (toolName) {
     case 'search_winget': {
       const result = await runPsScript('Search-Winget.ps1', ['-Query', String(input.query)],
@@ -348,6 +353,14 @@ async function executeToolCall(
       const sourceFolder = String(input.source_folder)
       const sha256 = input.sha256 ? String(input.sha256) : ''
 
+      try { validatePathInBase(sourceFolder, sourceRoot) } catch (err) {
+        if (err instanceof PathTraversalError) {
+          console.error(`[SECURITY] Path traversal blocked: ${err.attemptedPath} (base: ${err.baseDir})`)
+          return { success: false, error: `Invalid path: source_folder must be inside ${sourceRoot}` }
+        }
+        throw err
+      }
+
       const scriptContent = generateInstallScript(appName, version, installerFile, installerType, silentArgs, registryKey, sha256)
       const scriptPath = path.join(sourceFolder, `Install-${appName.replace(/\s+/g, '')}.ps1`)
       fs.mkdirSync(sourceFolder, { recursive: true })
@@ -364,6 +377,14 @@ async function executeToolCall(
       const sourceFolder = String(input.source_folder)
       const productGuid = input.product_guid ? String(input.product_guid) : ''
 
+      try { validatePathInBase(sourceFolder, sourceRoot) } catch (err) {
+        if (err instanceof PathTraversalError) {
+          console.error(`[SECURITY] Path traversal blocked: ${err.attemptedPath} (base: ${err.baseDir})`)
+          return { success: false, error: `Invalid path: source_folder must be inside ${sourceRoot}` }
+        }
+        throw err
+      }
+
       const scriptContent = generateUninstallScript(appName, version, installerType, registryKey, productGuid)
       const scriptPath = path.join(sourceFolder, `Uninstall-${appName.replace(/\s+/g, '')}.ps1`)
       fs.writeFileSync(scriptPath, scriptContent, 'utf8')
@@ -378,6 +399,14 @@ async function executeToolCall(
       const sourceFolder = String(input.source_folder)
       const exePath = input.exe_path ? String(input.exe_path) : ''
 
+      try { validatePathInBase(sourceFolder, sourceRoot) } catch (err) {
+        if (err instanceof PathTraversalError) {
+          console.error(`[SECURITY] Path traversal blocked: ${err.attemptedPath} (base: ${err.baseDir})`)
+          return { success: false, error: `Invalid path: source_folder must be inside ${sourceRoot}` }
+        }
+        throw err
+      }
+
       const scriptContent = generateDetectScript(appName, version, registryKey, exePath)
       const scriptName = `Detect-${appName.replace(/\s+/g, '')}.ps1`
       const scriptPath = path.join(sourceFolder, scriptName)
@@ -387,8 +416,18 @@ async function executeToolCall(
     }
 
     case 'generate_package_settings': {
+      const sourceFolder = String(input.source_folder)
+
+      try { validatePathInBase(sourceFolder, sourceRoot) } catch (err) {
+        if (err instanceof PathTraversalError) {
+          console.error(`[SECURITY] Path traversal blocked: ${err.attemptedPath} (base: ${err.baseDir})`)
+          return { success: false, error: `Invalid path: source_folder must be inside ${sourceRoot}` }
+        }
+        throw err
+      }
+
       const content = generatePackageSettings(input)
-      const settingsPath = path.join(String(input.source_folder), 'PACKAGE_SETTINGS.md')
+      const settingsPath = path.join(sourceFolder, 'PACKAGE_SETTINGS.md')
       fs.writeFileSync(settingsPath, content, 'utf8')
       log(`Generated: ${settingsPath}`)
       return { success: true, settingsPath }

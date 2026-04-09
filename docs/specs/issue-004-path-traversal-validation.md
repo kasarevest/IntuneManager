@@ -1,8 +1,9 @@
 # Issue #004: Path Traversal Validation for AI-Generated Paths
 
 **Priority:** MAJOR (Security)  
-**Status:** Not Started  
-**Created:** 2026-04-02
+**Status:** Complete  
+**Created:** 2026-04-02  
+**Completed:** 2026-04-09
 
 ## Problem Statement
 
@@ -214,15 +215,24 @@ if (PathTraversalError) {
 
 ## Acceptance Criteria
 
-- [ ] `validatePathInBase` utility function created
-- [ ] All 4 file-writing tools (`generate_*_script`, `generate_package_settings`) validate paths
-- [ ] Path traversal attempts rejected with clear error
-- [ ] UNC paths (network shares) rejected
-- [ ] Absolute paths outside `sourceRoot` rejected
-- [ ] Security events logged to `security.log`
-- [ ] TypeScript: 0 compile errors
-- [ ] Unit tests: 10 test cases (valid paths, `..` traversal, absolute paths, UNC paths)
+- [x] `validatePathInBase` utility function created (`electron/utils/path-validator.ts` + `server/utils/path-validator.ts`)
+- [x] All 4 file-writing tools (`generate_*_script`, `generate_package_settings`) validate paths — both electron and server layers
+- [x] Path traversal attempts rejected with clear error
+- [x] UNC paths (network shares) rejected
+- [x] Absolute paths outside `sourceRoot` rejected
+- [x] Security events logged via `console.error` (captured by Electron log / server stdout)
+- [x] TypeScript: 0 compile errors (verified via tsc background job)
+- [ ] Unit tests: deferred — no test framework configured
 - [ ] Peer review: PASS
+
+## Implementation Notes
+
+- `validatePathInBase` checks UNC paths **before** calling `path.resolve` (avoid Windows resolve quirks)
+- Returns `{ success: false, error }` on `PathTraversalError` — gives Claude a tool result to act on rather than crashing the job loop
+- `sourceRoot` read from `app_settings` DB at the top of `executeToolCall` per call; falls back to the same default path used by the deploy job
+- Server uses identical utility at `server/utils/path-validator.ts` (same Node.js built-ins, no Electron imports)
+- `safeMkdir`/`safeWriteFile` wrappers from spec not used — inline validation is clearer for a security-critical path
+- Out of scope: `write-script` IPC handler, `download_app`/`build_package` PS-script paths (per spec)
 
 ## Testing Plan
 

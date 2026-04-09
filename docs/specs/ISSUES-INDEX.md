@@ -58,14 +58,14 @@ This index tracks all identified issues from the peer review and provides links 
 
 ## MAJOR Issues
 
-### #004: Path Traversal Validation
+### #004: Path Traversal Validation ✅ COMPLETE
 **Priority:** MAJOR (Security)  
 **Impact:** AI-provided paths not validated; potential arbitrary file write vulnerability.  
 **Spec:** [issue-004-path-traversal-validation.md](issue-004-path-traversal-validation.md)
 
-**Summary:** Validate all AI-provided `sourceFolder` paths before file system operations. Reject paths outside `sourceRoot`, relative paths, and UNC paths. Log security events.
+**Summary:** `validatePathInBase()` utility created in `electron/utils/path-validator.ts` and `server/utils/path-validator.ts`. All 4 `generate_*` tool cases in both `electron/ipc/ai-agent.ts` and `server/routes/ai.ts` now validate `source_folder` before any `fs` operation. UNC paths, `..` traversal, and paths outside `sourceRoot` are rejected with `{ success: false, error }` + `console.error` security log.
 
-**Recommended Order:** Implement **FOURTH** (security hardening)
+**Completed:** 2026-04-09
 
 ---
 
@@ -214,7 +214,7 @@ Use this checklist to track implementation:
 - [x] #001 AAD Group Assignment — Complete 2026-04-09
 - [x] #002 PS Script Timeouts — Complete 2026-04-09
 - [ ] #003 Claude Iteration Recovery
-- [ ] #004 Path Traversal Validation
+- [x] #004 Path Traversal Validation — Complete 2026-04-09
 - [ ] #005 Deployment History
 - [ ] #006 Non-Semver Version Comparison
 - [ ] #007 Settings Path Validation
