@@ -144,6 +144,7 @@ try {
     <MacKey>$macKeyB64</MacKey>
     <InitializationVector>$ivB64</InitializationVector>
     <Mac>$macB64</Mac>
+    <MacAlgorithm>SHA256</MacAlgorithm>
     <ProfileIdentifier>ProfileVersion1</ProfileIdentifier>
     <FileDigest>$fileDigestB64</FileDigest>
     <FileDigestAlgorithm>SHA256</FileDigestAlgorithm>

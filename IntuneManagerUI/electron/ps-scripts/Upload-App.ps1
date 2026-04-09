@@ -135,21 +135,40 @@ try {
     Write-Log "Block list committed ($($blockIds.Count) blocks, $encryptedSize bytes)"
 
     # ── 6. Commit the file to Intune with encryption metadata ─────────────────
+    # Intune needs a moment after the Azure block-list commit before it will
+    # accept the Graph commit call. Retry up to 10 times (30s total) to handle
+    # the "Your app is not ready yet" 400 race condition.
     $commitJson = ConvertTo-Json @{
         fileEncryptionInfo = @{
             encryptionKey        = $encInfo.EncryptionKey
             macKey               = $encInfo.MacKey
             initializationVector = $encInfo.InitializationVector
             mac                  = $encInfo.Mac
-            macAlgorithm         = $encInfo.MacAlgorithm
+            macAlgorithm         = if ($encInfo.MacAlgorithm) { $encInfo.MacAlgorithm } else { 'SHA256' }
             profileIdentifier    = $encInfo.ProfileIdentifier
             fileDigest           = $encInfo.FileDigest
             fileDigestAlgorithm  = $encInfo.FileDigestAlgorithm
         }
     } -Compress -Depth 3
 
-    Invoke-RestMethod -Method POST -Uri "$cfUri/$fileId/commit" `
-        -Headers $graphHeaders -Body $commitJson | Out-Null
+    $committed = $false
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        try {
+            Invoke-RestMethod -Method POST -Uri "$cfUri/$fileId/commit" `
+                -Headers $graphHeaders -Body $commitJson | Out-Null
+            $committed = $true
+            break
+        } catch {
+            $msg = $_.Exception.Message
+            if ($attempt -lt 10 -and ($msg -match 'not ready' -or $msg -match '400')) {
+                Write-Log "Commit not ready (attempt $attempt/10) — retrying in 3s..."
+                Start-Sleep -Seconds 3
+            } else {
+                throw
+            }
+        }
+    }
+    if (-not $committed) { throw 'Timed out waiting for Intune to accept file commit' }
     Write-Log 'File commit initiated'
 
     # ── 7. Poll until Intune confirms commit ───────────────────────────────────
