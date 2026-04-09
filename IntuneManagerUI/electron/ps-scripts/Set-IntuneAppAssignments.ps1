@@ -21,27 +21,29 @@ try {
     }
 
     $assignments = $AssignmentsJson | ConvertFrom-Json
-    $uri         = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$AppId/assignments"
-    $assigned    = 0
+    Write-Log "Assigning app $AppId to $($assignments.Count) group(s)"
 
-    foreach ($a in $assignments) {
-        $body = ConvertTo-Json @{
-            '@odata.type' = '#microsoft.graph.mobileAppAssignment'
-            intent        = $a.intent   # 'required' or 'available'
-            target        = @{
-                '@odata.type' = '#microsoft.graph.groupAssignmentTarget'
-                groupId       = $a.groupId
+    # Use the /assign action — single request for all groups instead of N sequential POSTs
+    $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$AppId/assign"
+
+    $body = ConvertTo-Json @{
+        mobileAppAssignments = @($assignments | ForEach-Object {
+            @{
+                '@odata.type' = '#microsoft.graph.mobileAppAssignment'
+                intent        = $_.intent
+                target        = @{
+                    '@odata.type' = '#microsoft.graph.groupAssignmentTarget'
+                    groupId       = $_.groupId
+                }
+                settings      = $null
             }
-            settings      = $null
-        } -Compress -Depth 5
+        })
+    } -Compress -Depth 6
 
-        Invoke-RestMethod -Method POST -Uri $uri -Headers $graphHeaders -Body $body | Out-Null
-        $assigned++
-        Write-Log "Assigned to group $($a.groupId) as $($a.intent)"
-    }
+    Invoke-RestMethod -Method POST -Uri $uri -Headers $graphHeaders -Body $body -TimeoutSec 30 | Out-Null
 
-    Write-Log "Assignments complete: $assigned group(s)"
-    Write-Output "RESULT:$(ConvertTo-Json @{ success = $true; assigned = $assigned } -Compress)"
+    Write-Log "Assignments applied: $($assignments.Count) group(s)"
+    Write-Output "RESULT:$(ConvertTo-Json @{ success = $true; assigned = $assignments.Count } -Compress)"
 } catch {
     Write-Log "Assignment failed: $($_.Exception.Message)" 'ERROR'
     Write-Output "RESULT:$(ConvertTo-Json @{ success = $false; assigned = 0; error = $_.Exception.Message } -Compress)"

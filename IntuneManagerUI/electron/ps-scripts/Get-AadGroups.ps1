@@ -29,7 +29,7 @@ try {
     $uri  = "https://graph.microsoft.com/v1.0/groups?`$filter=$filter"
     Write-Log "Fetching AAD groups$(if ($Search) { " matching '$Search'" })"
 
-    $resp = Invoke-RestMethod -Method GET -Uri $uri -Headers $graphHeaders
+    $resp = Invoke-RestMethod -Method GET -Uri $uri -Headers $graphHeaders -TimeoutSec 20
     $raw  = $resp.value
 
     $groups = @($raw | ForEach-Object {
