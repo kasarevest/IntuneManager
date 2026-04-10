@@ -1,24 +1,7 @@
 import { useState, useCallback } from 'react'
 import type { AppRow } from '../types/app'
 import { ipcPsGetIntuneApps, ipcPsGetPackageSettings, ipcPsGetLatestVersion } from '../lib/api'
-
-function compareVersions(latest: string, intune: string): 'current' | 'update-available' | 'unknown' {
-  try {
-    const parse = (v: string) => v.trim().split('.').map(n => parseInt(n, 10) || 0)
-    const lv = parse(latest)
-    const iv = parse(intune)
-    const len = Math.max(lv.length, iv.length)
-    for (let i = 0; i < len; i++) {
-      const l = lv[i] ?? 0
-      const c = iv[i] ?? 0
-      if (l > c) return 'update-available'
-      if (l < c) return 'current'
-    }
-    return 'current'
-  } catch {
-    return 'unknown'
-  }
-}
+import { compareVersions } from '../lib/version'
 
 export function useAppCatalog() {
   const [apps, setApps] = useState<AppRow[]>([])
