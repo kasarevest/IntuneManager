@@ -837,7 +837,7 @@ async function runDeployJob(
   }
 
   if (iterations >= 20) {
-    throw new Error('Maximum tool iterations reached (20). Deployment may be incomplete.')
+    throw new Error('Maximum tool iterations reached (20). Deployment may be incomplete. Source folder preserved — check logs for partial progress.')
   }
 }
 
@@ -1062,7 +1062,10 @@ async function runPackageOnlyJob(
   }
 
   if (iterations >= 20) {
-    throw new Error('Maximum tool iterations reached (20). Packaging may be incomplete.')
+    const detail = builtIntunewinPath
+      ? ` Package was built: ${builtIntunewinPath}`
+      : ' No package was built.'
+    throw new Error(`Maximum tool iterations reached (20). Packaging may be incomplete. Source folder preserved — check logs for partial progress.${detail}`)
   }
 }
 
