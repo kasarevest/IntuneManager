@@ -22,6 +22,7 @@ import settingsRouter from './routes/settings'
 import psRouter from './routes/ps'
 import aiRouter from './routes/ai'
 import eventsRouter from './routes/events'
+import deploymentsRouter from './routes/deployments'
 
 const PORT = process.env.PORT ?? 3001
 
@@ -48,6 +49,7 @@ app.use(msAuthRouter)
 app.use(settingsRouter)
 app.use(psRouter)
 app.use(aiRouter)
+app.use(deploymentsRouter)
 
 // Serve React SPA in production
 const DIST_WEB = path.join(__dirname, '..', '..', 'builds', 'dist-web')
@@ -73,6 +75,14 @@ app.listen(PORT, () => {
       console.log('Auth initialised')
       return prisma.session.deleteMany({ where: { expires_at: { lt: new Date() } } })
     })
-    .then(() => console.log('Expired sessions cleaned up'))
+    .then(() => {
+      console.log('Expired sessions cleaned up')
+      // SCRUM-96/97: mark any jobs that were 'running' at crash/restart as failed
+      return prisma.appDeployment.updateMany({
+        where: { status: 'running' },
+        data: { status: 'failed', error_message: 'Server restarted while job was running', completed_at: new Date() }
+      })
+    })
+    .then((r) => { if (r.count > 0) console.log(`Orphaned ${r.count} running job(s) marked failed`) })
     .catch((err) => console.error('DB init error (non-fatal):', err.message))
 })

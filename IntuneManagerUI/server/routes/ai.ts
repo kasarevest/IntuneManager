@@ -797,6 +797,9 @@ async function runDeployJob(
   let capturedIntuneAppId: string | null = null
   let capturedIntunewinPath: string | null = null
 
+  // SCRUM-97: mark job as 'running' now that the AI loop is actually starting
+  await prisma.appDeployment.updateMany({ where: { job_id: jobId }, data: { status: 'running' } }).catch(() => {})
+
   let iterations = 0
   while (iterations++ < 20) {
     if (signal.aborted) throw new Error('Job cancelled')
@@ -1060,6 +1063,9 @@ async function runPackageOnlyJob(
   // Track metadata captured during packaging so upload-only step can use it
   let builtIntunewinPath: string | null = null
   let capturedPackageSettings: Record<string, unknown> | null = null
+
+  // SCRUM-97: mark job as 'running' now that the AI loop is actually starting
+  await prisma.appDeployment.updateMany({ where: { job_id: jobId }, data: { status: 'running' } }).catch(() => {})
 
   let iterations = 0
   while (iterations++ < 20) {
