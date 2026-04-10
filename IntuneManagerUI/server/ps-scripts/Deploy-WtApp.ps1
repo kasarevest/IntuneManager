@@ -1,12 +1,13 @@
 #Requires -Version 7.0
 param(
     [Parameter(Mandatory)] [string]$PackageFolder,
-    [string]$AccessToken      = '',
+    [string]$AccessToken          = '',
     # Assignment target: AllUsers | AllDevices | None
-    [string]$Assignment       = 'None',
+    [string]$Assignment           = 'None',
     # For updating an existing app: provide its Graph app ID to update in place
-    [string]$GraphId          = '',
-    [switch]$KeepAssignments
+    [string]$GraphId              = '',
+    [switch]$KeepAssignments,
+    [string]$ExpectedModuleHash   = ''
 )
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -19,6 +20,17 @@ function Write-Log([string]$Message, [string]$Level = 'INFO') {
 try {
     if (-not $AccessToken)    { throw 'AccessToken is required' }
     if (-not (Test-Path $PackageFolder)) { throw "Package folder not found: $PackageFolder" }
+
+    if ($ExpectedModuleHash) {
+        $mod = Get-Module WinTuner -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
+        if (-not $mod) { throw 'WinTuner module not found for hash verification' }
+        $psd1 = Join-Path $mod.ModuleBase 'WinTuner.psd1'
+        $actualHash = (Get-FileHash -Path $psd1 -Algorithm SHA256).Hash
+        if ($actualHash -ne $ExpectedModuleHash.ToUpper()) {
+            throw "WinTuner module hash mismatch! Expected: $ExpectedModuleHash, Got: $actualHash"
+        }
+        Write-Log "WinTuner module hash verified OK"
+    }
 
     Import-Module WinTuner -Force
     Connect-WtWinTuner -Token $AccessToken

@@ -3,8 +3,9 @@ param(
     [Parameter(Mandatory)] [string]$PackageId,
     [Parameter(Mandatory)] [string]$GraphId,
     [Parameter(Mandatory)] [string]$PackageFolder,
-    [string]$Version     = '',
-    [string]$AccessToken = ''
+    [string]$Version              = '',
+    [string]$AccessToken          = '',
+    [string]$ExpectedModuleHash   = ''
 )
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -19,6 +20,17 @@ try {
 
     if (-not (Test-Path $PackageFolder)) {
         New-Item -Path $PackageFolder -ItemType Directory -Force | Out-Null
+    }
+
+    if ($ExpectedModuleHash) {
+        $mod = Get-Module WinTuner -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
+        if (-not $mod) { throw 'WinTuner module not found for hash verification' }
+        $psd1 = Join-Path $mod.ModuleBase 'WinTuner.psd1'
+        $actualHash = (Get-FileHash -Path $psd1 -Algorithm SHA256).Hash
+        if ($actualHash -ne $ExpectedModuleHash.ToUpper()) {
+            throw "WinTuner module hash mismatch! Expected: $ExpectedModuleHash, Got: $actualHash"
+        }
+        Write-Log "WinTuner module hash verified OK"
     }
 
     Import-Module WinTuner -Force

@@ -507,8 +507,10 @@ router.post('/api/ps/wt-package', requireAuth as import('express').RequestHandle
     if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
     throw e
   }
+  const hashSetting = await prisma.appSetting.findUnique({ where: { key: 'wintuner_expected_hash' } })
   const args = ['-PackageId', packageId, '-PackageFolder', packageFolder, '-AccessToken', accessToken]
   if (version) args.push('-Version', version)
+  if (hashSetting?.value) args.push('-ExpectedModuleHash', hashSetting.value)
 
   const result = await runPsScript('New-WtPackage.ps1', args, (msg, level) => {
     if (jobId) sendToRenderer('job:log', { jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
@@ -526,10 +528,12 @@ router.post('/api/ps/wt-deploy', requireAuth as import('express').RequestHandler
     if (e instanceof GraphAuthError) { res.status(401).json({ success: false, error: e.message }); return }
     throw e
   }
+  const hashSetting = await prisma.appSetting.findUnique({ where: { key: 'wintuner_expected_hash' } })
   const args = ['-PackageFolder', packageFolder, '-AccessToken', accessToken]
   if (assignment) args.push('-Assignment', assignment)
   if (graphId) args.push('-GraphId', graphId)
   if (keepAssignments) args.push('-KeepAssignments')
+  if (hashSetting?.value) args.push('-ExpectedModuleHash', hashSetting.value)
 
   const result = await runPsScript('Deploy-WtApp.ps1', args, (msg, level) => {
     if (jobId) sendToRenderer('job:log', { jobId, level, message: msg, source: 'ps', timestamp: new Date().toISOString() })
