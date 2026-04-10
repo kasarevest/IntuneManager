@@ -1041,6 +1041,59 @@ The WinTuner update panel was completely invisible on the Installed Apps page. T
 ## Lesson Template (copy for new entries)
 
 ```
+## Lesson 020 — Sprint Batch: Prisma Schema Has No Relation → include Fails (2026-04-10)
+
+### Keywords
+`prisma`, `relation`, `include`, `deployment-history`, `schema`
+
+### What Happened
+Created `GET /api/deployments` route using `include: { performed_by_user: { select: { username: true } } }`.
+Prisma threw a compile error because `AppDeployment` has `performed_by Int?` but no `@relation` defined —
+the foreign key exists in SQL but Prisma doesn't generate a relation accessor without explicit schema declaration.
+
+### Anti-Pattern (Why It Happened)
+Assumed `performed_by Int?` field implied a Prisma relation. In Prisma, FK fields and relation accessors
+are separate concerns — the field stores the ID, the relation accessor is only generated when `@relation`
+is explicitly declared in the schema.
+
+### Heuristic (Prevention)
+Before using `include` in a Prisma query, grep `schema.prisma` for `@relation` on that model. If absent,
+either do a separate query or join in raw SQL. Do not assume FK integer columns auto-generate relation accessors.
+
+---
+
+## Lesson 021 — useCallback Dependency Array: validatePath in useEffect (2026-04-10)
+
+### Keywords
+`useCallback`, `useEffect`, `dependencies`, `validatePath`, `settings`, `eslint`
+
+### What Happened
+Added `validatePath` (wrapped in `useCallback`) and called it from `useEffect`. When the `useEffect`
+dependency array was `[]` instead of `[validatePath]`, ESLint would flag a stale closure warning.
+Added `[validatePath]` to the effect — safe because `useCallback` with stable deps produces a stable ref.
+
+### Heuristic (Prevention)
+Functions created with `useCallback` should be listed as `useEffect` deps. They are stable by design
+(same reference unless their own deps change), so including them in dep arrays is both correct and cheap.
+
+---
+
+## Lesson 022 — Module-Level Cache for Expensive One-Per-Session API Calls (2026-04-10)
+
+### Keywords
+`useUpdateCount`, `hook`, `caching`, `module-level`, `singleton`, `WinTuner`, `badge`
+
+### What Happened
+Needed a badge count from `ipcPsGetWtUpdates` (a slow PS/Graph API call) across multiple nav pages.
+Putting the fetch directly in a hook called from 5 pages would trigger 5 separate API calls on load.
+
+### Pattern Established
+Module-level `cachedCount` + `pendingPromise` singleton in the hook file. First caller fires the request;
+subsequent callers attach to `pendingPromise`. After resolution, all callers get the cached value instantly.
+Use `invalidateUpdateCount()` export to bust the cache after an update completes.
+
+---
+
 ## Lesson 00X — [App/Task] ([Date])
 
 ### Keywords
