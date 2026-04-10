@@ -827,11 +827,11 @@ async function runDeployJob(
         data: {
           status: 'success',
           completed_at: new Date(),
-          ...(capturedAppName && { app_name: capturedAppName }),
-          ...(capturedWingetId && { winget_id: capturedWingetId }),
-          ...(capturedVersion && { deployed_version: capturedVersion }),
-          ...(capturedIntuneAppId && { intune_app_id: capturedIntuneAppId }),
-          ...(capturedIntunewinPath && { intunewin_path: capturedIntunewinPath }),
+          ...(capturedAppName ? { app_name: capturedAppName } : {}),
+          ...(capturedWingetId ? { winget_id: capturedWingetId } : {}),
+          ...(capturedVersion ? { deployed_version: capturedVersion } : {}),
+          ...(capturedIntuneAppId ? { intune_app_id: capturedIntuneAppId } : {}),
+          ...(capturedIntunewinPath ? { intunewin_path: capturedIntunewinPath } : {}),
           log_snapshot: logLines.join('\n').slice(0, 10_240) || null,
         }
       }).catch(e => console.error('[deploy] Failed to update app_deployment (success):', (e as Error).message))
@@ -968,7 +968,7 @@ async function runUploadOnlyJob(
       status: 'success',
       completed_at: new Date(),
       intune_app_id: appId,
-      ...(req.packageSettings.app_name && { app_name: String(req.packageSettings.app_name) }),
+      ...(req.packageSettings.app_name ? { app_name: String(req.packageSettings.app_name) } : {}),
       log_snapshot: logLines.join('\n').slice(0, 10_240) || null,
     }
   }).catch(e => console.error('[upload-only] Failed to update app_deployment (success):', (e as Error).message))
@@ -1094,10 +1094,10 @@ async function runPackageOnlyJob(
         data: {
           status: 'success',
           completed_at: new Date(),
-          ...(capturedPackageSettings?.app_name && { app_name: String(capturedPackageSettings.app_name) }),
-          ...(capturedPackageSettings?.winget_id && { winget_id: String(capturedPackageSettings.winget_id) }),
-          ...(capturedPackageSettings?.app_version && { deployed_version: String(capturedPackageSettings.app_version) }),
-          ...(builtIntunewinPath && { intunewin_path: builtIntunewinPath }),
+          ...(capturedPackageSettings?.app_name ? { app_name: String(capturedPackageSettings.app_name) } : {}),
+          ...(capturedPackageSettings?.winget_id ? { winget_id: String(capturedPackageSettings.winget_id) } : {}),
+          ...(capturedPackageSettings?.app_version ? { deployed_version: String(capturedPackageSettings.app_version) } : {}),
+          ...(builtIntunewinPath ? { intunewin_path: builtIntunewinPath } : {}),
           log_snapshot: logLines.join('\n').slice(0, 10_240) || null,
         }
       }).catch(e => console.error('[package-only] Failed to update app_deployment (success):', (e as Error).message))
