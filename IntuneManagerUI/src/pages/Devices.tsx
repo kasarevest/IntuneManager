@@ -180,6 +180,7 @@ export default function Devices() {
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/installed-apps')}>Installed Apps</button>
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/catalog')}>App Catalog</button>
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/deploy')}>Deploy</button>
+          <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/history')}>History</button>
           <button
             className="btn-ghost"
             style={{ ...styles.navBtn, color: 'var(--text-100)', background: 'var(--bg-700)' }}

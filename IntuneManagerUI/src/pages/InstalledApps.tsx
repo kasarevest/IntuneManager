@@ -378,6 +378,9 @@ export default function InstalledApps() {
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/deploy')}>
             Deploy
           </button>
+          <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/history')}>
+            History
+          </button>
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/devices')}>
             Devices
           </button>

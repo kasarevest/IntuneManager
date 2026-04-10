@@ -69,8 +69,11 @@ export default function AuditLog() {
         <nav style={styles.nav}>
           <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/dashboard')}>Dashboard</button>
           <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/installed-apps')}>Installed Apps</button>
+          <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/catalog')}>App Catalog</button>
+          <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/deploy')}>Deploy</button>
           <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/history')}>History</button>
           <button className="btn-primary" style={{ fontSize: 13, padding: '5px 14px', background: 'var(--bg-700)', border: '1px solid var(--border)' }} disabled>Audit Log</button>
+          <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/devices')}>Devices</button>
         </nav>
         <div style={{ flex: 1 }} />
       </div>

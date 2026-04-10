@@ -101,6 +101,7 @@ export default function DeploymentHistory() {
           <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/catalog')}>App Catalog</button>
           <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/deploy')}>Deploy</button>
           <button className="btn-primary" style={{ fontSize: 13, padding: '5px 14px', background: 'var(--bg-700)', border: '1px solid var(--border)' }} disabled>History</button>
+          <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/devices')}>Devices</button>
         </nav>
         <div style={{ flex: 1 }} />
       </div>

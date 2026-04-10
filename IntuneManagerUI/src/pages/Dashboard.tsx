@@ -585,6 +585,7 @@ export default function Dashboard() {
           </button>
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/catalog')}>App Catalog</button>
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/deploy')}>Deploy</button>
+          <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/history')}>History</button>
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/devices')}>Devices</button>
         </nav>
 

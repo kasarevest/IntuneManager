@@ -485,6 +485,9 @@ export default function Deploy() {
           >
             Deploy
           </button>
+          <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/history')}>
+            History
+          </button>
           <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/devices')}>
             Devices
           </button>
