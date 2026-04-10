@@ -7,6 +7,7 @@ import {
 } from 'recharts'
 import { useAuth } from '../contexts/AuthContext'
 import { useTenant } from '../contexts/TenantContext'
+import { useUpdateCount } from '../hooks/useUpdateCount'
 import {
   ipcPsGetIntuneApps, ipcPsGetDevices,
   ipcPsGetAppInstallStats, ipcPsGetUpdateStates,
@@ -278,6 +279,7 @@ export default function Dashboard() {
   const { logout } = useAuth()
   const { tenant, tenantChecked } = useTenant()
   const navigate = useNavigate()
+  const updateCount = useUpdateCount()
 
   // Existing state
   const [appSummary, setAppSummary] = useState<AppSummary | null>(null)
@@ -573,7 +575,14 @@ export default function Dashboard() {
 
         <nav style={styles.nav}>
           <button className="btn-primary" style={{ ...styles.navBtn, background: 'var(--bg-700)', border: '1px solid var(--border)' }} disabled>Dashboard</button>
-          <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/installed-apps')}>Installed Apps</button>
+          <button className="btn-ghost" style={{ ...styles.navBtn, position: 'relative' }} onClick={() => navigate('/installed-apps')}>
+            Installed Apps
+            {updateCount > 0 && (
+              <span style={{ position: 'absolute', top: 2, right: 2, background: 'var(--warning)', color: '#000', borderRadius: 999, fontSize: 9, fontWeight: 700, minWidth: 14, height: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', lineHeight: 1 }}>
+                {updateCount > 99 ? '99+' : updateCount}
+              </span>
+            )}
+          </button>
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/catalog')}>App Catalog</button>
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/deploy')}>Deploy</button>
           <button className="btn-ghost" style={styles.navBtn} onClick={() => navigate('/devices')}>Devices</button>
