@@ -44,4 +44,58 @@ router.get('/api/deployments', requireAuth as import('express').RequestHandler, 
   }
 })
 
+// GET /api/deployments/export?format=csv|json&status=all|success|failed
+router.get('/api/deployments/export', requireAuth as import('express').RequestHandler, async (req, res) => {
+  try {
+    const format = (req.query.format as string | undefined) ?? 'csv'
+    const status = req.query.status as string | undefined
+
+    const where: Record<string, unknown> = {}
+    if (status && status !== 'all') where.status = status
+
+    const rows = await prisma.appDeployment.findMany({
+      where,
+      orderBy: { started_at: 'desc' }
+    })
+
+    const records = rows.map(d => ({
+      id: d.id,
+      jobId: d.job_id,
+      appName: d.app_name,
+      wingetId: d.winget_id ?? '',
+      intuneAppId: d.intune_app_id ?? '',
+      deployedVersion: d.deployed_version ?? '',
+      operation: d.operation,
+      status: d.status,
+      errorMessage: d.error_message ?? '',
+      startedAt: d.started_at ? new Date(d.started_at).toISOString() : '',
+      completedAt: d.completed_at ? new Date(d.completed_at).toISOString() : ''
+    }))
+
+    if (format === 'json') {
+      res.setHeader('Content-Type', 'application/json')
+      res.setHeader('Content-Disposition', 'attachment; filename="deployment-history.json"')
+      res.send(JSON.stringify(records, null, 2))
+      return
+    }
+
+    // CSV
+    const headers = ['id', 'jobId', 'appName', 'wingetId', 'intuneAppId', 'deployedVersion', 'operation', 'status', 'errorMessage', 'startedAt', 'completedAt']
+    const escape = (v: unknown) => {
+      const s = String(v ?? '')
+      return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const csv = [
+      headers.join(','),
+      ...records.map(r => headers.map(h => escape(r[h as keyof typeof r])).join(','))
+    ].join('\n')
+
+    res.setHeader('Content-Type', 'text/csv')
+    res.setHeader('Content-Disposition', 'attachment; filename="deployment-history.csv"')
+    res.send(csv)
+  } catch (err) {
+    res.status(500).json({ success: false, error: (err as Error).message })
+  }
+})
+
 export default router

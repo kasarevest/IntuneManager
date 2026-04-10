@@ -33,6 +33,8 @@ export default function DeploymentHistory() {
   const [filter, setFilter] = useState<StatusFilter>('all')
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
+  const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv')
+  const [exporting, setExporting] = useState(false)
   const pageSize = 50
 
   const load = useCallback(async (status: StatusFilter, p: number) => {
@@ -58,6 +60,29 @@ export default function DeploymentHistory() {
   const handleFilter = (f: StatusFilter) => {
     setFilter(f)
     setPage(1)
+  }
+
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const params = new URLSearchParams({ format: exportFormat })
+      if (filter !== 'all') params.set('status', filter)
+      const token = sessionStorage.getItem('intunemanager_session')
+      const res = await fetch(`/api/deployments/export?${params}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      })
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `deployment-history.${exportFormat}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      // silent — user will see nothing downloaded
+    } finally {
+      setExporting(false)
+    }
   }
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
@@ -89,8 +114,8 @@ export default function DeploymentHistory() {
             </p>
           </div>
 
-          {/* Filter tabs */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* Filter tabs + export */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             {(['all', 'success', 'failed'] as StatusFilter[]).map(f => (
               <button
                 key={f}
@@ -104,6 +129,26 @@ export default function DeploymentHistory() {
             <span style={{ fontSize: 12, color: 'var(--text-400)', marginLeft: 8 }}>
               {total} record{total !== 1 ? 's' : ''}
             </span>
+
+            <div style={{ flex: 1 }} />
+
+            {/* Export controls */}
+            <select
+              value={exportFormat}
+              onChange={e => setExportFormat(e.target.value as 'csv' | 'json')}
+              style={{ width: 'auto', fontSize: 12, padding: '4px 10px' }}
+            >
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+            </select>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: 12, padding: '5px 14px', flexShrink: 0 }}
+              onClick={handleExport}
+              disabled={exporting || total === 0}
+            >
+              {exporting ? 'Exporting…' : 'Export'}
+            </button>
           </div>
 
           {error && (
