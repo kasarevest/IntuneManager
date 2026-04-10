@@ -974,6 +974,41 @@ In a loop where two items complete within the same millisecond (plausible for fa
 
 ---
 
+## Lesson 018 — Project Separation: Side-Effect Audit Skipped → Docker Build Failure (2026-04-10)
+
+### Keywords
+`docker`, `dockerfile`, `separation`, `refactor`, `side-effect`, `ps-bridge`, `build-context`, `enhanced-workflow`
+
+### What Happened
+Executed a large structural refactor (separating Electron desktop from web app) without entering Plan Mode and without running the Side-Effect Audit from CLAUDE.md. The CI/CD pipeline broke immediately on the next push with two Dockerfile errors:
+1. `COPY electron/ps-scripts/` — path no longer existed in the Docker build context after the PS scripts were moved to `desktop-app/`
+2. `COPY vite.web.config.ts` — file had been renamed to `vite.config.ts`
+
+The root cause was a missing pre-flight step: listing files that other systems (Dockerfile, CI workflows, ps-bridge.ts) depend on before removing or renaming them.
+
+### Anti-Pattern (Why It Happened)
+**Structural refactors bypass the Side-Effect Audit because they feel like "moving files, not changing logic."**
+
+Moving a folder feels safe — nothing is being deleted, only relocated. But the Dockerfile, `ps-bridge.ts`, and the GitHub Actions workflow all contain hardcoded paths that are invisible to a file-move operation. The checklist was skipped because the task was "obvious."
+
+### Heuristic (Prevention)
+**Before any structural refactor (move, rename, delete): grep for all hardcoded references to the affected paths.**
+
+Specific enforcement rules:
+1. For every file or folder being moved/renamed: `grep -r "old-path-or-name" .` across the entire repo before touching anything.
+2. For Docker-hosted apps: the Dockerfile is always in scope for a side-effect audit. Ask: "Does anything in the Dockerfile reference a path I'm changing?"
+3. For PS bridge paths: `ps-bridge.ts` and the Dockerfile are always co-dependent — changing one requires checking the other.
+4. The 3-step trigger applies to refactors. "Structural" ≠ "simple". Enter Plan Mode.
+
+### Technical Patterns Established
+| Concern | Rule |
+|---------|------|
+| Docker build context boundary | All files referenced by `COPY` in a Dockerfile must be within the build context directory — files outside it are unreachable |
+| `ps-bridge.ts` path resolution | Web container: `path.join(__dirname, '..', 'ps-scripts')` → `server/dist/ps-scripts/` → Dockerfile `COPY server/ps-scripts/ ./server/dist/ps-scripts/` |
+| Pre-refactor grep | `grep -r "electron/ps-scripts\|vite.web.config\|build:web" .` before any separation that touches those paths |
+
+---
+
 ## Lesson Template (copy for new entries)
 
 ```
