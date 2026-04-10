@@ -1009,6 +1009,35 @@ Specific enforcement rules:
 
 ---
 
+## Lesson 019 — InstalledApps: Panel Gating + Settings Race Condition (2026-04-10)
+
+### Keywords
+`react`, `useEffect`, `async`, `race-condition`, `settings`, `wintuner`, `panel`, `visibility`, `installed-apps`
+
+### What Happened
+The WinTuner update panel was completely invisible on the Installed Apps page. Two bugs:
+1. `loadWtUpdates()` was chained inside `ipcSettingsGet()` with no catch handler. Any settings failure (network, 401) silently prevented the update check from ever running.
+2. The panel rendered only when `wtLoading || wtUpdates.length > 0 || wtError`. When WinTuner returned 0 updates (all apps current), the panel produced no output — no empty state, no refresh button, no user feedback.
+
+### Anti-Pattern (Why It Happened)
+**Two anti-patterns compounded:**
+1. **Sequential async gating** — chaining unrelated async operations sequentially (`await A; doB()`) makes B dependent on A's success. If A can fail, B is silently skipped.
+2. **Optimistic panel gating** — hiding a panel entirely until it has results assumes the "interesting" state is the only state worth showing. Zero-result and loading states are equally important to the user.
+
+### Heuristic (Prevention)
+1. **Never gate an independent async call inside another async call without a catch.** If two async operations are independent (settings load ≠ WinTuner check), run them in parallel: `Promise A; Promise B` — not `await A; B`.
+2. **Always render UI sections.** Panels that have loading/empty/error states should always be in the DOM. Show "Checking…", "✓ All current", or the error message. Never hide the section entirely — the user needs to know the feature exists.
+3. **Check the spec before and after implementation.** The spec had the correct acceptance criteria. Querying it earlier would have caught the "always show" requirement explicitly (AC4: "no update action shown" for current apps — the panel still shows, just with no action rows).
+
+### Technical Patterns Established
+| Concern | Rule |
+|---------|------|
+| Independent async init calls | `promiseA.then(...).catch(()=>{})` + `callB()` on the next line — never `await A; callB()` |
+| Panel with multiple states | Always render the container div; branch loading/empty/error/results inside |
+| "Update All" button | Place in panel header, not inside conditional content block |
+
+---
+
 ## Lesson Template (copy for new entries)
 
 ```
