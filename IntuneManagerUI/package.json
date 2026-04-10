@@ -1,23 +1,13 @@
 {
-  "name": "intune-manager-ui",
+  "name": "intune-manager-web",
   "version": "1.0.0",
-  "description": "IntuneManager — AI-powered Intune Win32 app deployment tool",
-  "main": "builds/dist-electron/main.js",
+  "description": "IntuneManager — AI-powered Intune Win32 app deployment tool (Web / Azure Container Apps)",
   "scripts": {
-    "dev": "vite",
-    "dev:web": "concurrently \"cd server && node -r ts-node/register index.ts\" \"vite --config vite.web.config.ts\"",
-    "build": "tsc -p tsconfig.node.json && tsc --noEmit && vite build",
-    "build:web": "vite build --config vite.web.config.ts",
-    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
-    "electron:build": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
-    "typecheck": "tsc --noEmit",
-    "postinstall": "powershell -ExecutionPolicy Bypass -Command \"$env:PYTHON='C:\\Program Files\\Python39\\python.exe'; npx electron-rebuild -f -w better-sqlite3\""
+    "dev": "concurrently \"cd server && npm run dev\" \"vite\"",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^0.27.0",
-    "@anthropic-ai/sdk": "^0.36.3",
-    "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.9.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.2",
@@ -25,22 +15,13 @@
     "uuid": "^10.0.0"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.1",
-    "@types/bcryptjs": "^2.4.6",
-    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20.16.11",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.3.2",
     "concurrently": "^9.0.1",
-    "cross-env": "^10.1.0",
-    "electron": "^32.1.2",
-    "electron-builder": "^25.1.7",
     "typescript": "^5.6.3",
-    "vite": "^5.4.8",
-    "vite-plugin-electron": "^0.28.8",
-    "vite-plugin-electron-renderer": "^0.14.6",
-    "wait-on": "^8.0.1"
+    "vite": "^5.4.8"
   }
 }

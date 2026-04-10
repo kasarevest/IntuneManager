@@ -1,3 +1,14 @@
+/**
+ * api.ts — Electron IPC bridge (Desktop app)
+ *
+ * Exposes the same function signatures as the web api.ts so all pages/
+ * components work without import changes. Calls are routed through
+ * Electron's contextBridge (window.electronAPI) instead of HTTP fetch.
+ *
+ * Event subscriptions (onJobLog, etc.) are also exported here.
+ * sse.ts re-exports them to satisfy pages that import from '../lib/sse'.
+ */
+
 import type {
   LoginReq, LoginRes,
   FirstRunCheckRes, GeneratedPasswordRes, ValidateSessionRes,
@@ -16,7 +27,15 @@ import type {
   AppInstallStatsRes,
   UpdateStatesRes,
   UEAScoresRes,
-  AutopilotEventsRes
+  AutopilotEventsRes,
+  WtUpdatesRes,
+  WtPackageReq, WtPackageRes,
+  WtDeployReq, WtDeployRes,
+  WtUpdateAppReq, WtUpdateAppRes,
+  GetAadGroupsRes,
+  GetRecentGroupsRes,
+  SetAssignmentsReq,
+  SetAssignmentsRes
 } from '../types/ipc'
 import type { LogEntry } from '../types/app'
 
@@ -30,7 +49,24 @@ interface ElectronAPI {
   off: (channel: string, listener: (data: unknown) => void) => void
 }
 
-// --- Auth ---
+// ─── Settings type (matches web api.ts shape) ────────────────────────────────
+
+export interface SettingsGetRes {
+  success: boolean
+  intunewinToolPath?: string
+  sourceRootPath?: string
+  outputFolderPath?: string
+  claudeApiKey?: string
+  defaultMinOs?: string
+  logRetentionDays?: number
+  awsRegion?: string
+  awsBedrockModelId?: string
+  claudeApiKeyConfigured?: boolean
+  error?: string
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
 export const ipcAuthFirstRunCheck = (): Promise<FirstRunCheckRes> =>
   api.invoke('ipc:auth:first-run-check') as Promise<FirstRunCheckRes>
 
@@ -61,27 +97,15 @@ export const ipcAuthDeleteUser = (sessionToken: string, userId: number): Promise
 export const ipcAuthChangePassword = (req: ChangePasswordReq): Promise<{ success: boolean; error?: string }> =>
   api.invoke('ipc:auth:change-password', req) as Promise<{ success: boolean; error?: string }>
 
-// --- Dialog ---
+// ─── Dialog ───────────────────────────────────────────────────────────────────
+
 export const ipcDialogOpenFile = (title: string, filters?: { name: string; extensions: string[] }[]): Promise<string | null> =>
   api.invoke('ipc:dialog:open-file', { title, filters }) as Promise<string | null>
 
 export const ipcDialogOpenFolder = (title: string): Promise<string | null> =>
   api.invoke('ipc:dialog:open-folder', { title }) as Promise<string | null>
 
-// --- Settings ---
-export interface SettingsGetRes {
-  success: boolean
-  intunewinToolPath?: string
-  sourceRootPath?: string
-  outputFolderPath?: string
-  claudeApiKey?: string
-  defaultMinOs?: string
-  logRetentionDays?: number
-  awsRegion?: string
-  awsBedrockModelId?: string
-  claudeApiKeyConfigured?: boolean
-  error?: string
-}
+// ─── Settings ─────────────────────────────────────────────────────────────────
 
 export const ipcSettingsGet = (): Promise<SettingsGetRes> =>
   api.invoke('ipc:settings:get') as Promise<SettingsGetRes>
@@ -92,7 +116,8 @@ export const ipcSettingsSave = (req: SaveSettingsReq): Promise<{ success: boolea
 export const ipcSettingsClearAiCache = (): Promise<{ success: boolean; error?: string }> =>
   api.invoke('ipc:settings:clear-ai-cache') as Promise<{ success: boolean; error?: string }>
 
-// --- PS Bridge / Tenant ---
+// ─── PS Bridge / Tenant ───────────────────────────────────────────────────────
+
 export const ipcPsGetTenantConfig = (): Promise<AuthStatusRes> =>
   api.invoke('ipc:ps:get-tenant-config') as Promise<AuthStatusRes>
 
@@ -114,7 +139,40 @@ export const ipcPsGetLatestVersion = (wingetId: string): Promise<{ version: stri
 export const ipcPsSearchWinget = (query: string): Promise<{ success: boolean; results: unknown[]; error?: string }> =>
   api.invoke('ipc:ps:search-winget', { query }) as Promise<{ success: boolean; results: unknown[]; error?: string }>
 
-// --- AI Agent ---
+export const ipcPsListIntunewinPackages = (): Promise<ListPackagesRes> =>
+  api.invoke('ipc:ps:list-intunewin-packages') as Promise<ListPackagesRes>
+
+export const ipcPsDeletePackage = (intunewinPath: string): Promise<{ success: boolean; error?: string }> =>
+  api.invoke('ipc:ps:delete-package', { intunewinPath }) as Promise<{ success: boolean; error?: string }>
+
+export const ipcPsGetDevices = (): Promise<GetDevicesRes> =>
+  api.invoke('ipc:ps:get-devices') as Promise<GetDevicesRes>
+
+export const ipcPsTriggerWindowsUpdate = (deviceId: string): Promise<TriggerDeviceActionRes> =>
+  api.invoke('ipc:ps:trigger-windows-update', { deviceId }) as Promise<TriggerDeviceActionRes>
+
+export const ipcPsTriggerDriverUpdate = (deviceId: string): Promise<TriggerDeviceActionRes> =>
+  api.invoke('ipc:ps:trigger-driver-update', { deviceId }) as Promise<TriggerDeviceActionRes>
+
+export const ipcPsDownloadDiagnostics = (deviceId: string, deviceName: string): Promise<TriggerDeviceActionRes> =>
+  api.invoke('ipc:ps:download-diagnostics', { deviceId, deviceName }) as Promise<TriggerDeviceActionRes>
+
+// ─── Dashboard data sources ───────────────────────────────────────────────────
+
+export const ipcPsGetAppInstallStats = (): Promise<AppInstallStatsRes> =>
+  api.invoke('ipc:ps:get-app-install-stats') as Promise<AppInstallStatsRes>
+
+export const ipcPsGetUpdateStates = (): Promise<UpdateStatesRes> =>
+  api.invoke('ipc:ps:get-update-states') as Promise<UpdateStatesRes>
+
+export const ipcPsGetUEAScores = (): Promise<UEAScoresRes> =>
+  api.invoke('ipc:ps:get-uea-scores') as Promise<UEAScoresRes>
+
+export const ipcPsGetAutopilotEvents = (): Promise<AutopilotEventsRes> =>
+  api.invoke('ipc:ps:get-autopilot-events') as Promise<AutopilotEventsRes>
+
+// ─── AI Agent ─────────────────────────────────────────────────────────────────
+
 export const ipcAiDeployApp = (req: DeployAppReq): Promise<DeployAppRes> =>
   api.invoke('ipc:ai:deploy-app', req) as Promise<DeployAppRes>
 
@@ -130,39 +188,38 @@ export const ipcAiGetRecommendations = (): Promise<GetRecommendationsRes> =>
 export const ipcAiCancel = (jobId: string): Promise<void> =>
   api.invoke('ipc:ai:cancel', { jobId }) as Promise<void>
 
-export const ipcPsListIntunewinPackages = (): Promise<ListPackagesRes> =>
-  api.invoke('ipc:ps:list-intunewin-packages') as Promise<ListPackagesRes>
+// ─── AWS ──────────────────────────────────────────────────────────────────────
 
-export const ipcPsGetDevices = (): Promise<GetDevicesRes> =>
-  api.invoke('ipc:ps:get-devices') as Promise<GetDevicesRes>
-
-export const ipcPsTriggerWindowsUpdate = (deviceId: string): Promise<TriggerDeviceActionRes> =>
-  api.invoke('ipc:ps:trigger-windows-update', { deviceId }) as Promise<TriggerDeviceActionRes>
-
-export const ipcPsTriggerDriverUpdate = (deviceId: string): Promise<TriggerDeviceActionRes> =>
-  api.invoke('ipc:ps:trigger-driver-update', { deviceId }) as Promise<TriggerDeviceActionRes>
-
-export const ipcPsDownloadDiagnostics = (deviceId: string, deviceName: string): Promise<TriggerDeviceActionRes> =>
-  api.invoke('ipc:ps:download-diagnostics', { deviceId, deviceName }) as Promise<TriggerDeviceActionRes>
-
-// --- Dashboard v2 data sources ---
-export const ipcPsGetAppInstallStats = (): Promise<AppInstallStatsRes> =>
-  api.invoke('ipc:ps:get-app-install-stats') as Promise<AppInstallStatsRes>
-
-export const ipcPsGetUpdateStates = (): Promise<UpdateStatesRes> =>
-  api.invoke('ipc:ps:get-update-states') as Promise<UpdateStatesRes>
-
-export const ipcPsGetUEAScores = (): Promise<UEAScoresRes> =>
-  api.invoke('ipc:ps:get-uea-scores') as Promise<UEAScoresRes>
-
-export const ipcPsGetAutopilotEvents = (): Promise<AutopilotEventsRes> =>
-  api.invoke('ipc:ps:get-autopilot-events') as Promise<AutopilotEventsRes>
-
-// --- AWS ---
 export const ipcAwsSsoLogin = (profile?: string): Promise<AwsSsoLoginRes> =>
   api.invoke('ipc:aws:sso-login', { profile }) as Promise<AwsSsoLoginRes>
 
-// --- Event subscriptions ---
+// ─── WinTuner ─────────────────────────────────────────────────────────────────
+
+export const ipcPsGetWtUpdates = (): Promise<WtUpdatesRes> =>
+  api.invoke('ipc:ps:get-wt-updates') as Promise<WtUpdatesRes>
+
+export const ipcPsWtPackage = (req: WtPackageReq): Promise<WtPackageRes> =>
+  api.invoke('ipc:ps:wt-package', req) as Promise<WtPackageRes>
+
+export const ipcPsWtDeploy = (req: WtDeployReq): Promise<WtDeployRes> =>
+  api.invoke('ipc:ps:wt-deploy', req) as Promise<WtDeployRes>
+
+export const ipcPsWtUpdateApp = (req: WtUpdateAppReq): Promise<WtUpdateAppRes> =>
+  api.invoke('ipc:ps:wt-update-app', req) as Promise<WtUpdateAppRes>
+
+// ─── AAD Group Assignments ────────────────────────────────────────────────────
+
+export const ipcPsGetAadGroups = (search?: string): Promise<GetAadGroupsRes> =>
+  api.invoke('ipc:ps:get-aad-groups', { search }) as Promise<GetAadGroupsRes>
+
+export const ipcPsGetRecentGroups = (): Promise<GetRecentGroupsRes> =>
+  api.invoke('ipc:ps:get-recent-groups') as Promise<GetRecentGroupsRes>
+
+export const ipcPsSetAppAssignments = (req: SetAssignmentsReq): Promise<SetAssignmentsRes> =>
+  api.invoke('ipc:ps:set-app-assignments', req) as Promise<SetAssignmentsRes>
+
+// ─── Job event subscriptions ──────────────────────────────────────────────────
+
 export const onJobLog = (callback: (data: LogEntry) => void): (() => void) =>
   api.on('job:log', callback as (data: unknown) => void)
 
@@ -178,7 +235,8 @@ export const onJobError = (callback: (data: { jobId: string; error: string; phas
 export const onJobPackageComplete = (callback: (data: { jobId: string; intunewinPath: string | null; packageSettings: Record<string, unknown> | null }) => void): (() => void) =>
   api.on('job:package-complete', callback as (data: unknown) => void)
 
-// --- Cache update events (background refresh notifications) ---
+// ─── Cache update events ──────────────────────────────────────────────────────
+
 export const onCacheAppsUpdated = (cb: (data: IntuneAppsRes) => void): (() => void) =>
   api.on('ipc:cache:apps-updated', cb as (data: unknown) => void)
 
@@ -196,3 +254,6 @@ export const onCacheUEAScoresUpdated = (cb: (data: UEAScoresRes) => void): (() =
 
 export const onCacheAutopilotEventsUpdated = (cb: (data: AutopilotEventsRes) => void): (() => void) =>
   api.on('ipc:cache:autopilot-events-updated', cb as (data: unknown) => void)
+
+export const onRecommendationsUpdated = (cb: (data: GetRecommendationsRes) => void): (() => void) =>
+  api.on('recommendations-updated', cb as (data: unknown) => void)
