@@ -49,6 +49,8 @@ export interface SettingsGetRes {
   awsRegion?: string
   awsBedrockModelId?: string
   claudeApiKeyConfigured?: boolean
+  theme?: string
+  wintunerExpectedHash?: string
   error?: string
 }
 
@@ -141,6 +143,9 @@ export const ipcSettingsSave = (req: SaveSettingsReq): Promise<{ success: boolea
 
 export const ipcSettingsClearAiCache = (): Promise<{ success: boolean; error?: string }> =>
   post('/api/settings/clear-cache')
+
+export const ipcValidatePath = (path: string): Promise<{ success: boolean; exists: boolean; status: string; error?: string }> =>
+  post('/api/settings/validate-path', { path })
 
 // ─── PS Bridge / Tenant ───────────────────────────────────────────────────────
 
@@ -244,3 +249,20 @@ export const ipcPsGetRecentGroups = (): Promise<GetRecentGroupsRes> =>
 
 export const ipcPsSetAppAssignments = (req: SetAssignmentsReq): Promise<SetAssignmentsRes> =>
   post('/api/ps/app-assignments', req)
+
+// ─── Deployments ──────────────────────────────────────────────────────────────
+
+export const ipcGetDeployments = (status?: string, page?: number): Promise<{
+  success: boolean
+  deployments: Array<{
+    id: number; jobId: string; appName: string; wingetId: string | null
+    intuneAppId: string | null; deployedVersion: string | null; operation: string
+    status: string; errorMessage: string | null; startedAt: string; completedAt: string | null
+  }>
+  total: number; page: number; pageSize: number; error?: string
+}> => {
+  const params = new URLSearchParams()
+  if (status && status !== 'all') params.set('status', status)
+  if (page) params.set('page', String(page))
+  return get(`/api/deployments${params.toString() ? `?${params}` : ''}`)
+}

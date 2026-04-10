@@ -9,7 +9,7 @@ import {
 } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { TenantProvider } from './contexts/TenantContext'
-import { ipcAuthFirstRunCheck } from './lib/api'
+import { ipcAuthFirstRunCheck, ipcSettingsGet } from './lib/api'
 
 import Login from './pages/Login'
 import FirstRun from './pages/FirstRun'
@@ -23,6 +23,8 @@ import NewUserSetup from './pages/NewUserSetup'
 import GeneralTab from './settings/GeneralTab'
 import TenantTab from './settings/TenantTab'
 import UsersTab from './settings/UsersTab'
+import DeploymentHistory from './pages/DeploymentHistory'
+import AuditLog from './pages/AuditLog'
 
 // Guard: redirect to /login if not authenticated; redirect mustChangePassword users to /new-user-setup
 function RequireAuth() {
@@ -85,6 +87,8 @@ const router = createHashRouter([
       { path: '/catalog', element: <AppCatalog /> },
       { path: '/deploy', element: <Deploy /> },
       { path: '/devices', element: <Devices /> },
+      { path: '/history', element: <DeploymentHistory /> },
+      { path: '/audit-log', element: <AuditLog /> },
       {
         path: '/settings',
         element: <Settings />,
@@ -101,6 +105,15 @@ const router = createHashRouter([
 ])
 
 export default function App() {
+  // Apply saved theme on every startup (before auth)
+  useEffect(() => {
+    ipcSettingsGet().then(res => {
+      if (res.success && res.theme) {
+        document.documentElement.dataset.theme = res.theme
+      }
+    }).catch(() => {})
+  }, [])
+
   return (
     <AuthProvider>
       <TenantProvider>
