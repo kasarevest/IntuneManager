@@ -17,6 +17,9 @@ IntuneManagerUI/.env
 IntuneManagerUI/.env.local
 IntuneManagerUI/server/.env
 
+# Jira polling credentials (contains API token — never commit)
+scripts/.env.jira
+
 # Downloaded installers and generated packages
 Source/*/
 Output/
