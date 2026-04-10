@@ -66,6 +66,12 @@ export default function Deploy() {
   const updateQueueRef = useRef<UpdateQueueItem[]>([])
   const updateQueueIndexRef = useRef(0)
 
+  // SCRUM-99/100/101: per-item outcomes for summary modal
+  interface QueueResult { name: string; status: 'success' | 'failed'; error?: string }
+  const [queueResults, setQueueResults] = useState<QueueResult[]>([])
+  const queueResultsRef = useRef<QueueResult[]>([])
+  const [showSummaryModal, setShowSummaryModal] = useState(false)
+
   // Cleanup subscriptions on unmount
   useEffect(() => {
     return () => { unsubsRef.current.forEach(fn => fn()) }
@@ -250,7 +256,16 @@ export default function Deploy() {
 
         // Advance update queue if in batch mode
         const queue = updateQueueRef.current
-        const nextIndex = updateQueueIndexRef.current + 1
+        const currentIdx = updateQueueIndexRef.current
+        if (queue.length > 0) {
+          // SCRUM-101: record success for current item
+          const currentItem = queue[currentIdx]
+          if (currentItem) {
+            queueResultsRef.current = [...queueResultsRef.current, { name: currentItem.name, status: 'success' }]
+            setQueueResults([...queueResultsRef.current])
+          }
+        }
+        const nextIndex = currentIdx + 1
         if (queue.length > 0 && nextIndex < queue.length) {
           updateQueueIndexRef.current = nextIndex
           setUpdateQueueIndex(nextIndex)
@@ -260,24 +275,57 @@ export default function Deploy() {
             ? `Update to latest version: ${next.name} (winget ID: ${next.wingetId}). Update existing Intune app ID: ${next.id}`
             : `Update to latest version: ${next.name}. Update existing Intune app ID: ${next.id}`
           startPackageJob(req)
+        } else if (queue.length > 0) {
+          // All done — show summary
+          setJob(prev => prev ? { ...prev, status: 'complete', phase: 'done', phaseLabel: `All ${queue.length} updates complete!` } : prev)
+          setShowSummaryModal(true)
+          updateQueueRef.current = []
+          updateQueueIndexRef.current = 0
+          setUpdateQueue([])
+          setUpdateQueueIndex(0)
+          queueResultsRef.current = []
         } else {
-          const allDone = queue.length > 0
-          setJob(prev => prev ? {
-            ...prev, status: 'complete', phase: 'done',
-            phaseLabel: allDone ? `All ${queue.length} updates deployed!` : 'Deployment complete!'
-          } : prev)
-          if (allDone) {
-            updateQueueRef.current = []
-            updateQueueIndexRef.current = 0
-            setUpdateQueue([])
-            setUpdateQueueIndex(0)
-          }
+          setJob(prev => prev ? { ...prev, status: 'complete', phase: 'done', phaseLabel: 'Deployment complete!' } : prev)
         }
       }),
       onJobError((data: { jobId: string; error: string }) => {
         if (data.jobId !== jobId) return
-        setJob(prev => prev ? { ...prev, status: 'error', error: data.error } : prev)
         clearSubs()
+
+        // SCRUM-114: in batch mode, continue queue instead of stopping
+        const queue = updateQueueRef.current
+        const currentIdx = updateQueueIndexRef.current
+        if (queue.length > 0) {
+          // Record failure
+          const currentItem = queue[currentIdx]
+          if (currentItem) {
+            queueResultsRef.current = [...queueResultsRef.current, { name: currentItem.name, status: 'failed', error: data.error }]
+            setQueueResults([...queueResultsRef.current])
+          }
+          const nextIndex = currentIdx + 1
+          if (nextIndex < queue.length) {
+            updateQueueIndexRef.current = nextIndex
+            setUpdateQueueIndex(nextIndex)
+            setJob(null)
+            const next = queue[nextIndex]
+            const req = next.wingetId
+              ? `Update to latest version: ${next.name} (winget ID: ${next.wingetId}). Update existing Intune app ID: ${next.id}`
+              : `Update to latest version: ${next.name}. Update existing Intune app ID: ${next.id}`
+            startPackageJob(req)
+          } else {
+            // All done (with some failures) — show summary
+            setJob(prev => prev ? { ...prev, status: 'complete', phase: 'done', phaseLabel: 'Update All complete (with errors)' } : prev)
+            setShowSummaryModal(true)
+            updateQueueRef.current = []
+            updateQueueIndexRef.current = 0
+            setUpdateQueue([])
+            setUpdateQueueIndex(0)
+            queueResultsRef.current = []
+          }
+        } else {
+          // Single job — show error as before
+          setJob(prev => prev ? { ...prev, status: 'error', error: data.error } : prev)
+        }
       })
     )
   }, [])
@@ -639,6 +687,51 @@ export default function Deploy() {
           onSkip={() => setAssignmentTarget(null)}
         />
       )}
+
+      {/* SCRUM-99/100/101: Update All summary modal */}
+      {showSummaryModal && queueResults.length > 0 && (() => {
+        const succeeded = queueResults.filter(r => r.status === 'success').length
+        const failed = queueResults.filter(r => r.status === 'failed').length
+        return (
+          <div style={overlayStyles.backdrop} onClick={() => { setShowSummaryModal(false); setQueueResults([]) }}>
+            <div style={{ ...overlayStyles.modal, maxWidth: 520, maxHeight: '80vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+              <h2 style={{ margin: '0 0 8px', fontSize: 18 }}>Update All — Summary</h2>
+              <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
+                <div style={{ background: '#14532d', border: '1px solid var(--success)', borderRadius: 8, padding: '10px 20px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--success)' }}>{succeeded}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-400)', textTransform: 'uppercase' }}>Succeeded</div>
+                </div>
+                <div style={{ background: '#7f1d1d', border: '1px solid var(--error)', borderRadius: 8, padding: '10px 20px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--error)' }}>{failed}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-400)', textTransform: 'uppercase' }}>Failed</div>
+                </div>
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '4px 8px', fontSize: 11, color: 'var(--text-400)', borderBottom: '1px solid var(--border)' }}>App</th>
+                    <th style={{ textAlign: 'left', padding: '4px 8px', fontSize: 11, color: 'var(--text-400)', borderBottom: '1px solid var(--border)' }}>Result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {queueResults.map((r, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td style={{ padding: '7px 8px' }}>{r.name}</td>
+                      <td style={{ padding: '7px 8px' }}>
+                        <span className={`badge badge-${r.status === 'success' ? 'success' : 'error'}`}>{r.status}</span>
+                        {r.error && <span style={{ fontSize: 11, color: 'var(--error)', marginLeft: 8 }}>{r.error.slice(0, 80)}</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button className="btn-primary" style={{ marginTop: 20, width: '100%' }} onClick={() => { setShowSummaryModal(false); setQueueResults([]) }}>
+                Close
+              </button>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
