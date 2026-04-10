@@ -1038,43 +1038,34 @@ The WinTuner update panel was completely invisible on the Installed Apps page. T
 
 ---
 
-## Lesson Template (copy for new entries)
+---
 
-```
-## Lesson 020 — Sprint Batch: Prisma Schema Has No Relation → include Fails (2026-04-10)
+## Lesson 020 — Prisma Schema Has No Relation → `include` Fails (2026-04-10)
 
 ### Keywords
 `prisma`, `relation`, `include`, `deployment-history`, `schema`
 
 ### What Happened
-Created `GET /api/deployments` route using `include: { performed_by_user: { select: { username: true } } }`.
-Prisma threw a compile error because `AppDeployment` has `performed_by Int?` but no `@relation` defined —
-the foreign key exists in SQL but Prisma doesn't generate a relation accessor without explicit schema declaration.
+Created `GET /api/deployments` route using `include: { performed_by_user: { select: { username: true } } }`. Prisma threw a compile error because `AppDeployment` has `performed_by Int?` but no `@relation` defined — the foreign key exists in SQL but Prisma doesn't generate a relation accessor without explicit schema declaration.
 
 ### Anti-Pattern (Why It Happened)
-Assumed `performed_by Int?` field implied a Prisma relation. In Prisma, FK fields and relation accessors
-are separate concerns — the field stores the ID, the relation accessor is only generated when `@relation`
-is explicitly declared in the schema.
+Assumed `performed_by Int?` field implied a Prisma relation. In Prisma, FK fields and relation accessors are separate concerns — the field stores the ID, the relation accessor is only generated when `@relation` is explicitly declared in the schema.
 
 ### Heuristic (Prevention)
-Before using `include` in a Prisma query, grep `schema.prisma` for `@relation` on that model. If absent,
-either do a separate query or join in raw SQL. Do not assume FK integer columns auto-generate relation accessors.
+Before using `include` in a Prisma query, grep `schema.prisma` for `@relation` on that model. If absent, either do a separate query or join in raw SQL. Do not assume FK integer columns auto-generate relation accessors.
 
 ---
 
-## Lesson 021 — useCallback Dependency Array: validatePath in useEffect (2026-04-10)
+## Lesson 021 — `useCallback` in `useEffect` Dependency Array (2026-04-10)
 
 ### Keywords
 `useCallback`, `useEffect`, `dependencies`, `validatePath`, `settings`, `eslint`
 
 ### What Happened
-Added `validatePath` (wrapped in `useCallback`) and called it from `useEffect`. When the `useEffect`
-dependency array was `[]` instead of `[validatePath]`, ESLint would flag a stale closure warning.
-Added `[validatePath]` to the effect — safe because `useCallback` with stable deps produces a stable ref.
+Added `validatePath` (wrapped in `useCallback`) and called it from `useEffect`. When the `useEffect` dependency array was `[]` instead of `[validatePath]`, ESLint flagged a stale closure warning. Adding `[validatePath]` to the effect is safe because `useCallback` with stable deps produces a stable reference — the effect only re-runs when deps change.
 
 ### Heuristic (Prevention)
-Functions created with `useCallback` should be listed as `useEffect` deps. They are stable by design
-(same reference unless their own deps change), so including them in dep arrays is both correct and cheap.
+Functions created with `useCallback` should always be listed as `useEffect` deps. They are stable by design (same reference unless their own deps change), so including them in dep arrays is correct and cheap.
 
 ---
 
@@ -1084,16 +1075,52 @@ Functions created with `useCallback` should be listed as `useEffect` deps. They 
 `useUpdateCount`, `hook`, `caching`, `module-level`, `singleton`, `WinTuner`, `badge`
 
 ### What Happened
-Needed a badge count from `ipcPsGetWtUpdates` (a slow PS/Graph API call) across multiple nav pages.
-Putting the fetch directly in a hook called from 5 pages would trigger 5 separate API calls on load.
+Needed a badge count from `ipcPsGetWtUpdates` (a slow PS/Graph API call) across multiple nav pages. Putting the fetch directly in a hook called from 5 pages would trigger 5 separate API calls on load.
 
 ### Pattern Established
-Module-level `cachedCount` + `pendingPromise` singleton in the hook file. First caller fires the request;
-subsequent callers attach to `pendingPromise`. After resolution, all callers get the cached value instantly.
-Use `invalidateUpdateCount()` export to bust the cache after an update completes.
+Module-level `cachedCount` + `pendingPromise` singleton in the hook file. First caller fires the request; subsequent callers attach to `pendingPromise`. After resolution, all callers get the cached value instantly. Export `invalidateUpdateCount()` to bust the cache after an update completes.
+
+### Technical Patterns Established
+
+| Pattern | Implementation |
+|---------|----------------|
+| Module-level singleton cache | `let cachedCount: number | null = null; let pendingPromise: Promise<number> | null = null` — outside the hook function |
+| First-caller fires, rest attach | `if (pendingPromise) return pendingPromise; pendingPromise = fetchFn().then(v => { cachedCount = v; return v })` |
+| Cache invalidation | `export function invalidateUpdateCount() { cachedCount = null; pendingPromise = null }` |
 
 ---
 
+## Lesson 023 — Implementing Pages Without Adding Nav Links (2026-04-10)
+
+### Keywords
+`react`, `react-router`, `navigation`, `nav-link`, `history`, `audit-log`, `ui`, `invisible`, `route`
+
+### What Happened
+Two new pages (`/history` and `/audit-log`) were implemented as React routes in `App.tsx` and the pages themselves had their own navbars — but no "History" button was added to the existing pages (Dashboard, Deploy, AppCatalog, InstalledApps, Devices). The pages were completely unreachable from the running UI without typing the URL directly.
+
+The user reported "I do not see any implemented changes in the UI. It's still the same." This was the root cause: the pages existed but had no entry point.
+
+### Anti-Pattern (Why It Happened)
+**Adding a route without updating the nav is a two-step operation that looks complete after step one.** The route worked (no 404), the page component rendered correctly when visited, and the new page's own navbar linked back to the old pages — so all tests from *within* the new page passed. The missing step was never tested: "can a user reach this page from any existing page?"
+
+### Heuristic (Prevention)
+1. **For every new page: immediately search for all topbar `<nav>` blocks and add a link.** The deployment checklist must include: "Did you add a nav link to every existing page?"
+2. **Test navigation forward and backward.** After implementing a new page, verify you can reach it by clicking from the Dashboard — not just by URL.
+3. **Side-Effect Audit for new routes:** A new route has one downstream breakage by definition — every existing nav bar is now incomplete.
+
+### Technical Patterns Established
+
+| Pattern | Rule |
+|---------|------|
+| New page checklist | Route in `App.tsx` → nav button in every existing page's topbar → nav button in new page's own topbar |
+| Current-page disabled style | `className="btn-primary"` + `disabled` + `style={{ background: 'var(--bg-700)', border: '1px solid var(--border)' }}` |
+| Nav order convention | Dashboard → Installed Apps → App Catalog → Deploy → History → Devices |
+
+---
+
+## Lesson Template (copy for new entries)
+
+```
 ## Lesson 00X — [App/Task] ([Date])
 
 ### Keywords
