@@ -5,6 +5,7 @@ import { useRecommendations } from '../hooks/useRecommendations'
 import AppCard from '../components/AppCard'
 import type { AppRecommendation } from '../types/ipc'
 import { ipcPsSearchWinget } from '../lib/api'
+import { useUpdateCount } from '../hooks/useUpdateCount'
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -12,12 +13,16 @@ export default function AppCatalog() {
   const navigate = useNavigate()
   const { tenant } = useTenant()
   const { recommendations, loading: recsLoading, refreshing: recsRefreshing, error: recsError } = useRecommendations()
+  const updateCount = useUpdateCount()
 
   // Search
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<AppRecommendation[]>([])
   const [searching, setSearching] = useState(false)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Category filter
+  const [categoryFilter, setCategoryFilter] = useState('All')
 
   // Deploy modal
   const [deployTarget, setDeployTarget] = useState<AppRecommendation | null>(null)
@@ -86,8 +91,13 @@ export default function AppCatalog() {
           <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/dashboard')}>
             Dashboard
           </button>
-          <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px' }} onClick={() => navigate('/installed-apps')}>
+          <button className="btn-ghost" style={{ fontSize: 13, padding: '5px 14px', position: 'relative' }} onClick={() => navigate('/installed-apps')}>
             Installed Apps
+            {updateCount > 0 && (
+              <span style={{ position: 'absolute', top: 2, right: 2, background: 'var(--warning)', color: '#000', borderRadius: 999, fontSize: 9, fontWeight: 700, minWidth: 14, height: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', lineHeight: 1 }}>
+                {updateCount > 99 ? '99+' : updateCount}
+              </span>
+            )}
           </button>
           <button
             className="btn-primary"
@@ -193,6 +203,20 @@ export default function AppCatalog() {
                   )}
                   {recsRefreshing && <span style={styles.refreshingBadge}>Refreshing...</span>}
                 </h2>
+                {/* SCRUM-125: category filter */}
+                {!recsLoading && recommendations.length > 0 && (() => {
+                  const categories = ['All', ...Array.from(new Set(recommendations.map(r => r.category).filter(Boolean)))]
+                  if (categories.length <= 2) return null
+                  return (
+                    <select
+                      value={categoryFilter}
+                      onChange={e => setCategoryFilter(e.target.value)}
+                      style={{ width: 'auto', fontSize: 12, padding: '4px 10px' }}
+                    >
+                      {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  )
+                })()}
               </div>
 
               {recsError && (
@@ -211,9 +235,11 @@ export default function AppCatalog() {
 
               {!recsLoading && recommendations.length > 0 && (
                 <div style={styles.grid}>
-                  {recommendations.map(app => (
-                    <AppCard key={app.id} app={app} onDeploy={handleCardDeploy} />
-                  ))}
+                  {recommendations
+                    .filter(app => categoryFilter === 'All' || app.category === categoryFilter)
+                    .map(app => (
+                      <AppCard key={app.id} app={app} onDeploy={handleCardDeploy} />
+                    ))}
                 </div>
               )}
 
