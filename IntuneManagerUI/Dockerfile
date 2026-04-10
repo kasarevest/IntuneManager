@@ -17,9 +17,9 @@ COPY package.json ./
 RUN npm install --ignore-scripts
 
 COPY src/ ./src/
-COPY vite.web.config.ts tsconfig.json tsconfig.node.json index.html ./
+COPY vite.config.ts tsconfig.json tsconfig.node.json index.html ./
 
-RUN npm run build:web
+RUN npm run build
 # Output: /build/builds/dist-web/
 
 # ── Stage 2: Compile Express server ──────────────────────────────────────────
@@ -69,8 +69,8 @@ COPY --from=server-builder /build/server/package.json  ./server/package.json
 
 # Copy PS bridge scripts into the compiled server tree so __dirname resolution works.
 # ps-bridge.ts compiles to dist/services/ps-bridge.js → __dirname = /app/server/dist/services
-# path.join(__dirname, '..', 'electron', 'ps-scripts') → /app/server/dist/electron/ps-scripts
-COPY electron/ps-scripts/ ./server/dist/electron/ps-scripts/
+# path.join(__dirname, '..', 'ps-scripts') → /app/server/dist/ps-scripts
+COPY server/ps-scripts/ ./server/dist/ps-scripts/
 
 # Copy React SPA (served as static files by Express in production)
 COPY --from=spa-builder /build/builds/dist-web/ ./builds/dist-web/

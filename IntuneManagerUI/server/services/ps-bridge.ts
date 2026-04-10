@@ -1,8 +1,8 @@
 import { spawn, ChildProcess } from 'child_process'
 import path from 'path'
 
-// server/ is a sibling to electron/ inside IntuneManagerUI/
-const PS_SCRIPTS_DIR = path.join(__dirname, '..', 'electron', 'ps-scripts')
+// PS scripts live in server/ps-scripts/ (web app) — copied to dist/ps-scripts/ by Docker
+const PS_SCRIPTS_DIR = path.join(__dirname, '..', 'ps-scripts')
 
 // ─── Core PS runner ───────────────────────────────────────────────────────────
 
