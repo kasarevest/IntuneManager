@@ -354,6 +354,9 @@ export default function Deploy() {
   const isError = job?.status === 'error'
   const showJobPanel = !!job
 
+  const isIterationLimitError = (err?: string) =>
+    !!err?.includes('Maximum tool iterations reached')
+
   // ─── Details modal for ready packages ────────────────────────────────────────
 
   const renderDetailsModal = () => {
@@ -500,13 +503,31 @@ export default function Deploy() {
               <ProgressStepper currentPhase={job.phase} isError={isError} />
 
               <div style={{ marginBottom: 6 }}>
-                <span style={{
-                  fontSize: 13,
-                  color: isDone ? 'var(--success)' : isError ? 'var(--error)' : 'var(--text-200)',
-                  fontWeight: 500
-                }}>
-                  {isDone ? `✓ ${job.phaseLabel}` : isError ? `✕ ${job.error}` : job.phaseLabel}
-                </span>
+                {isError && isIterationLimitError(job.error) ? (
+                  <div style={{
+                    background: 'var(--bg-700)',
+                    border: '1px solid var(--error)',
+                    borderRadius: 'var(--radius)',
+                    padding: '12px 16px'
+                  }}>
+                    <p style={{ fontWeight: 600, color: 'var(--error)', fontSize: 13, margin: '0 0 6px' }}>
+                      AI reached iteration limit
+                    </p>
+                    <p style={{ fontSize: 12, color: 'var(--text-300)', margin: 0, lineHeight: 1.5 }}>
+                      The packaging agent hit the 20-step limit. Any files generated so far are preserved
+                      in the source folder — check the log above for details. Try simplifying the request
+                      or deploying a manually downloaded installer from the <em>Ready to Deploy</em> section below.
+                    </p>
+                  </div>
+                ) : (
+                  <span style={{
+                    fontSize: 13,
+                    color: isDone ? 'var(--success)' : isError ? 'var(--error)' : 'var(--text-200)',
+                    fontWeight: 500
+                  }}>
+                    {isDone ? `✓ ${job.phaseLabel}` : isError ? `✕ ${job.error}` : job.phaseLabel}
+                  </span>
+                )}
               </div>
 
               <LogPanel logs={job.logs} height={360} onClear={() => setJob(prev => prev ? { ...prev, logs: [] } : prev)} />
