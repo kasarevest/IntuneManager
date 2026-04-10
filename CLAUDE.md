@@ -158,6 +158,24 @@ IntuneManagerUI/
 
 ---
 
+## Commit Message Convention
+
+Format: `type(SCRUM-XX): short description`
+
+Jira Smart Commits: any commit containing a Jira ticket key (`SCRUM-XX`) will automatically link to the issue in Jira. Always include the ticket key when working on a backlog item.
+
+```
+feat(SCRUM-78): add Direct Claude API Key field to Settings
+fix(SCRUM-61): emit structured error when Claude hits 20-iteration limit
+chore(SCRUM-95): mark orphaned jobs as failed on startup
+```
+
+**Types:** `feat` (new feature) | `fix` (bug fix) | `refactor` | `chore` | `docs` | `test`
+
+If no Jira ticket exists (hotfix, quick chore): omit the ticket — `fix: correct typo in error message`
+
+---
+
 ## Deployment Checklist (Web Mode)
 
 Before pushing to `master`:
