@@ -744,7 +744,9 @@ async function runDeployJob(
   signal: AbortSignal,
   sendEvent: (channel: string, data: unknown) => void
 ): Promise<void> {
+  const logLines: string[] = []
   const log = (msg: string, level = 'INFO', source: 'ai' | 'ps' | 'system' = 'ai') => {
+    logLines.push(`[${level}] ${msg}`)
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
   }
 
@@ -788,6 +790,13 @@ async function runDeployJob(
   log(`Source root: ${sourceRoot}`)
   log(`Output folder: ${outputFolder}`)
 
+  // SCRUM-67/68: metadata captured during tool calls for DB record
+  let capturedAppName = ''
+  let capturedWingetId: string | null = null
+  let capturedVersion: string | null = null
+  let capturedIntuneAppId: string | null = null
+  let capturedIntunewinPath: string | null = null
+
   let iterations = 0
   while (iterations++ < 20) {
     if (signal.aborted) throw new Error('Job cancelled')
@@ -809,6 +818,20 @@ async function runDeployJob(
     }
 
     if (response.stop_reason === 'end_turn') {
+      // SCRUM-68: update deployment record on success
+      await prisma.appDeployment.updateMany({
+        where: { job_id: jobId },
+        data: {
+          status: 'success',
+          completed_at: new Date(),
+          ...(capturedAppName && { app_name: capturedAppName }),
+          ...(capturedWingetId && { winget_id: capturedWingetId }),
+          ...(capturedVersion && { deployed_version: capturedVersion }),
+          ...(capturedIntuneAppId && { intune_app_id: capturedIntuneAppId }),
+          ...(capturedIntunewinPath && { intunewin_path: capturedIntunewinPath }),
+          log_snapshot: logLines.join('\n').slice(0, 10_240) || null,
+        }
+      }).catch(e => console.error('[deploy] Failed to update app_deployment (success):', (e as Error).message))
       setPhase('done')
       sendEvent('job:complete', { jobId })
       break
@@ -825,6 +848,24 @@ async function runDeployJob(
 
       try {
         const result = await executeToolCall(block.name, block.input as Record<string, unknown>, jobId, sendEvent)
+        if (block.name === 'generate_package_settings') {
+          const inp = block.input as Record<string, unknown>
+          if (inp.app_name)   capturedAppName  = String(inp.app_name)
+          if (inp.winget_id)  capturedWingetId = String(inp.winget_id)
+          if (inp.app_version) capturedVersion = String(inp.app_version)
+        }
+        if (block.name === 'get_latest_version' && !capturedVersion) {
+          const r = result as { version?: string }
+          if (r.version) capturedVersion = r.version
+        }
+        if (block.name === 'create_intune_app') {
+          const r = result as { success?: boolean; appId?: string }
+          if (r.appId) capturedIntuneAppId = r.appId
+        }
+        if (block.name === 'build_package') {
+          const r = result as { success?: boolean; intunewinPath?: string }
+          if (r.intunewinPath) capturedIntunewinPath = r.intunewinPath
+        }
         toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) })
       } catch (err) {
         const errMsg = (err as Error).message
@@ -849,7 +890,9 @@ async function runUploadOnlyJob(
   signal: AbortSignal,
   sendEvent: (channel: string, data: unknown) => void
 ): Promise<void> {
+  const logLines: string[] = []
   const log = (msg: string, level = 'INFO', source: 'ai' | 'ps' | 'system' = 'system') => {
+    logLines.push(`[${level}] ${msg}`)
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
   }
   const setPhase = (phase: string) => {
@@ -915,6 +958,17 @@ async function runUploadOnlyJob(
     throw new Error(`Upload failed: ${uploadResult.error ?? 'unknown error'}`)
   }
 
+  // SCRUM-68: update deployment record on success
+  await prisma.appDeployment.updateMany({
+    where: { job_id: jobId },
+    data: {
+      status: 'success',
+      completed_at: new Date(),
+      intune_app_id: appId,
+      ...(req.packageSettings.app_name && { app_name: String(req.packageSettings.app_name) }),
+      log_snapshot: logLines.join('\n').slice(0, 10_240) || null,
+    }
+  }).catch(e => console.error('[upload-only] Failed to update app_deployment (success):', (e as Error).message))
   log('Deployment complete! App is now available in Intune.')
   setPhase('done')
   sendEvent('job:complete', { jobId, appId })
@@ -960,7 +1014,9 @@ async function runPackageOnlyJob(
   signal: AbortSignal,
   sendEvent: (channel: string, data: unknown) => void
 ): Promise<void> {
+  const logLines: string[] = []
   const log = (msg: string, level = 'INFO', source: 'ai' | 'ps' | 'system' = 'ai') => {
+    logLines.push(`[${level}] ${msg}`)
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
   }
 
@@ -1026,6 +1082,19 @@ async function runPackageOnlyJob(
     }
 
     if (response.stop_reason === 'end_turn') {
+      // SCRUM-68: update deployment record on success
+      await prisma.appDeployment.updateMany({
+        where: { job_id: jobId },
+        data: {
+          status: 'success',
+          completed_at: new Date(),
+          ...(capturedPackageSettings?.app_name && { app_name: String(capturedPackageSettings.app_name) }),
+          ...(capturedPackageSettings?.winget_id && { winget_id: String(capturedPackageSettings.winget_id) }),
+          ...(capturedPackageSettings?.app_version && { deployed_version: String(capturedPackageSettings.app_version) }),
+          ...(builtIntunewinPath && { intunewin_path: builtIntunewinPath }),
+          log_snapshot: logLines.join('\n').slice(0, 10_240) || null,
+        }
+      }).catch(e => console.error('[package-only] Failed to update app_deployment (success):', (e as Error).message))
       setPhase('done')
       sendEvent('job:package-complete', { jobId, intunewinPath: builtIntunewinPath, packageSettings: capturedPackageSettings })
       sendEvent('job:complete', { jobId })
@@ -1086,8 +1155,20 @@ router.post('/api/ai/deploy', requireAuth as import('express').RequestHandler, a
 
   const sendEvent = (channel: string, data: unknown) => sseManager.broadcast(channel, data)
 
+  // SCRUM-67: insert pending deployment record (non-fatal)
+  const appNameHint = String(body.userRequest).replace(/^(deploy|update|install)\s+/i, '').trim().slice(0, 120)
+  prisma.appDeployment.create({
+    data: { job_id: jobId, app_name: appNameHint, operation: body.isUpdate ? 'update' : 'deploy', status: 'pending' }
+  }).catch(err => console.error('[deploy] Failed to insert app_deployment record:', (err as Error).message))
+
   runDeployJob(jobId, body, abortController.signal, sendEvent).catch(err => {
-    sendEvent('job:error', { jobId, error: (err as Error).message, phase: 'unknown' })
+    const msg = (err as Error).message
+    // SCRUM-68: update deployment record on failure
+    prisma.appDeployment.updateMany({
+      where: { job_id: jobId },
+      data: { status: 'failed', completed_at: new Date(), error_message: msg.slice(0, 1_024) }
+    }).catch(dbErr => console.error('[deploy] Failed to update app_deployment (fail):', (dbErr as Error).message))
+    sendEvent('job:error', { jobId, error: msg, phase: 'unknown' })
   }).finally(() => {
     activeJobs.delete(jobId)
   })
@@ -1108,8 +1189,20 @@ router.post('/api/ai/package-only', requireAuth as import('express').RequestHand
 
   const sendEvent = (channel: string, data: unknown) => sseManager.broadcast(channel, data)
 
+  // SCRUM-67: insert pending deployment record (non-fatal)
+  const pkgNameHint = String(body.userRequest).replace(/^(package|deploy|install)\s+/i, '').trim().slice(0, 120)
+  prisma.appDeployment.create({
+    data: { job_id: jobId, app_name: pkgNameHint, operation: 'deploy', status: 'pending' }
+  }).catch(err => console.error('[package-only] Failed to insert app_deployment record:', (err as Error).message))
+
   runPackageOnlyJob(jobId, body, abortController.signal, sendEvent).catch(err => {
-    sendEvent('job:error', { jobId, error: (err as Error).message, phase: 'unknown' })
+    const msg = (err as Error).message
+    // SCRUM-68: update deployment record on failure
+    prisma.appDeployment.updateMany({
+      where: { job_id: jobId },
+      data: { status: 'failed', completed_at: new Date(), error_message: msg.slice(0, 1_024) }
+    }).catch(dbErr => console.error('[package-only] Failed to update app_deployment (fail):', (dbErr as Error).message))
+    sendEvent('job:error', { jobId, error: msg, phase: 'unknown' })
   }).finally(() => {
     activeJobs.delete(jobId)
   })
@@ -1131,8 +1224,20 @@ router.post('/api/ai/upload-only', requireAuth as import('express').RequestHandl
 
   const sendEvent = (channel: string, data: unknown) => sseManager.broadcast(channel, data)
 
+  // SCRUM-67: insert pending deployment record (non-fatal)
+  const uploadAppName = String(body.packageSettings.app_name ?? '').slice(0, 120)
+  prisma.appDeployment.create({
+    data: { job_id: jobId, app_name: uploadAppName, operation: 'deploy', status: 'pending' }
+  }).catch(err => console.error('[upload-only] Failed to insert app_deployment record:', (err as Error).message))
+
   runUploadOnlyJob(jobId, body, abortController.signal, sendEvent).catch(err => {
-    sendEvent('job:error', { jobId, error: (err as Error).message, phase: 'uploading' })
+    const msg = (err as Error).message
+    // SCRUM-68: update deployment record on failure
+    prisma.appDeployment.updateMany({
+      where: { job_id: jobId },
+      data: { status: 'failed', completed_at: new Date(), error_message: msg.slice(0, 1_024) }
+    }).catch(dbErr => console.error('[upload-only] Failed to update app_deployment (fail):', (dbErr as Error).message))
+    sendEvent('job:error', { jobId, error: msg, phase: 'uploading' })
   }).finally(() => {
     activeJobs.delete(jobId)
   })

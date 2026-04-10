@@ -45,14 +45,14 @@ This index tracks all identified issues from the peer review and provides links 
 
 ---
 
-### #003: Claude 20-Iteration Limit Recovery
+### #003: Claude 20-Iteration Limit Recovery ✅ COMPLETE
 **Priority:** BLOCKING (Technical)  
 **Impact:** Partial state (files, scripts) left on disk with no cleanup when Claude reaches iteration limit.  
 **Spec:** [issue-003-claude-iteration-recovery.md](issue-003-claude-iteration-recovery.md)
 
-**Summary:** Track partial progress during deployment. On 20-iteration limit, log which steps succeeded, which failed, and Claude's final reasoning. Enhanced error messages help admins understand what went wrong.
+**Summary:** `isIterationLimitError` helper added to `Deploy.tsx` — renders a structured error card with partial-progress detail instead of a raw error string. `runDeployJob` and `runPackageOnlyJob` in `server/routes/ai.ts` emit enhanced error messages confirming source folder is preserved and reporting whether the `.intunewin` was built before the limit was hit.
 
-**Recommended Order:** Implement **THIRD** (improves error diagnostics)
+**Completed:** 2026-04-10
 
 ---
 
@@ -80,14 +80,14 @@ This index tracks all identified issues from the peer review and provides links 
 
 ---
 
-### #006: Non-Semver Version Comparison
+### #006: Non-Semver Version Comparison ✅ COMPLETE
 **Priority:** MAJOR (Feature Gap)  
 **Impact:** Date-based and quad-part versions (Edge, Chrome, Teams) never show "Update Available".  
 **Spec:** [issue-006-non-semver-version-comparison.md](issue-006-non-semver-version-comparison.md)
 
-**Summary:** Enhance `compareVersions()` to detect and compare date-based (`20241201`), quad-part (`132.0.6834.83`), and CalVer formats. Maintain semver compatibility.
+**Summary:** `compareVersions` extracted from `useAppCatalog.ts` into `src/lib/version.ts`. Handles v-prefix, suffix stripping, 8-digit YYYYMMDD date versions, quad-part (132.0.6834.83), mixed triple/quad, and mixed date/semver → `unknown`. 20 vitest test cases added in `src/lib/version.test.ts`.
 
-**Recommended Order:** Implement **SIXTH** (improves update detection coverage)
+**Completed:** 2026-04-10
 
 ---
 
@@ -213,10 +213,10 @@ Use this checklist to track implementation:
 
 - [x] #001 AAD Group Assignment — Complete 2026-04-09
 - [x] #002 PS Script Timeouts — Complete 2026-04-09
-- [ ] #003 Claude Iteration Recovery
+- [x] #003 Claude Iteration Recovery — Complete 2026-04-10
 - [x] #004 Path Traversal Validation — Complete 2026-04-09
-- [ ] #005 Deployment History
-- [ ] #006 Non-Semver Version Comparison
+- [x] #005 Deployment History — Complete 2026-04-10
+- [x] #006 Non-Semver Version Comparison — Complete 2026-04-10
 - [ ] #007 Settings Path Validation
 - [ ] #008 Orphaned Jobs Cleanup
 - [ ] #009 Update All Summary
@@ -228,3 +228,4 @@ Use this checklist to track implementation:
 - **Source Review:** [docs/PEER_REVIEW.md](../PEER_REVIEW.md)
 - **Project Overview:** [docs/PROJECT_OVERVIEW.md](../PROJECT_OVERVIEW.md)
 - **Workflow Guidelines:** [docs/WORKFLOW.md](../WORKFLOW.md)
+- **Backlog Recommendations:** [docs/specs/RECOMMENDATIONS.md](RECOMMENDATIONS.md) — 17 new items (security, feature gaps, new features) identified during backlog restructure 2026-04-10

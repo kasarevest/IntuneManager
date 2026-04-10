@@ -528,6 +528,49 @@ async function executeToolCall(
   }
 }
 
+// ─── Deployment history helpers (SCRUM-67/68) ─────────────────────────────────
+
+function recordDeploymentStart(db: Database, jobId: string, appName: string, operation: 'deploy' | 'update'): void {
+  try {
+    db.prepare(
+      "INSERT INTO app_deployments (job_id, app_name, operation, status, started_at) VALUES (?, ?, ?, 'pending', datetime('now'))"
+    ).run(jobId, appName, operation)
+  } catch (err) {
+    console.error('[deploy] Failed to insert app_deployment record:', (err as Error).message)
+  }
+}
+
+function recordDeploymentEnd(
+  db: Database,
+  jobId: string,
+  status: 'success' | 'failed',
+  opts?: {
+    errorMessage?: string
+    logSnapshot?: string
+    appName?: string
+    wingetId?: string
+    intuneAppId?: string
+    deployedVersion?: string
+    intunewinPath?: string
+  }
+): void {
+  try {
+    const sets: string[] = ["status = ?", "completed_at = datetime('now')"]
+    const params: (string | null)[] = [status]
+    if (opts?.errorMessage)    { sets.push('error_message = ?');    params.push(opts.errorMessage.slice(0, 1_024)) }
+    if (opts?.logSnapshot)     { sets.push('log_snapshot = ?');     params.push(opts.logSnapshot.slice(0, 10_240)) }
+    if (opts?.appName)         { sets.push('app_name = ?');         params.push(opts.appName) }
+    if (opts?.wingetId)        { sets.push('winget_id = ?');        params.push(opts.wingetId) }
+    if (opts?.intuneAppId)     { sets.push('intune_app_id = ?');    params.push(opts.intuneAppId) }
+    if (opts?.deployedVersion) { sets.push('deployed_version = ?'); params.push(opts.deployedVersion) }
+    if (opts?.intunewinPath)   { sets.push('intunewin_path = ?');   params.push(opts.intunewinPath) }
+    params.push(jobId)
+    db.prepare(`UPDATE app_deployments SET ${sets.join(', ')} WHERE job_id = ?`).run(...params)
+  } catch (err) {
+    console.error('[deploy] Failed to update app_deployment record:', (err as Error).message)
+  }
+}
+
 export function registerAiAgentHandlers(win: BrowserWindow, db: Database): void {
   const sendEvent = (channel: string, data: unknown) => win.webContents.send(channel, data)
 
@@ -541,9 +584,16 @@ export function registerAiAgentHandlers(win: BrowserWindow, db: Database): void 
     const abortController = new AbortController()
     activeJobs.set(jobId, { id: jobId, abortController, phase: 'analyzing' })
 
+    // SCRUM-67: insert pending deployment record (non-fatal)
+    const appNameHint = req.userRequest.replace(/^(deploy|update|install)\s+/i, '').trim().slice(0, 120)
+    recordDeploymentStart(db, jobId, appNameHint, req.isUpdate ? 'update' : 'deploy')
+
     // Run async — return jobId immediately
     runDeployJob(jobId, req, abortController.signal, sendEvent, db).catch(err => {
-      sendEvent('job:error', { jobId, error: (err as Error).message, phase: 'unknown' })
+      const msg = (err as Error).message
+      // SCRUM-68: update deployment record on failure
+      recordDeploymentEnd(db, jobId, 'failed', { errorMessage: msg })
+      sendEvent('job:error', { jobId, error: msg, phase: 'unknown' })
     }).finally(() => {
       activeJobs.delete(jobId)
     })
@@ -644,8 +694,15 @@ Respond ONLY with a JSON array. No markdown, no explanation.`,
     const abortController = new AbortController()
     activeJobs.set(jobId, { id: jobId, abortController, phase: 'uploading' })
 
+    // SCRUM-67: insert pending deployment record (non-fatal)
+    const uploadAppName = String(req.packageSettings.app_name ?? '').slice(0, 120)
+    recordDeploymentStart(db, jobId, uploadAppName, 'deploy')
+
     runUploadOnlyJob(jobId, req, abortController.signal, sendEvent, db).catch(err => {
-      sendEvent('job:error', { jobId, error: (err as Error).message, phase: 'uploading' })
+      const msg = (err as Error).message
+      // SCRUM-68: update deployment record on failure
+      recordDeploymentEnd(db, jobId, 'failed', { errorMessage: msg })
+      sendEvent('job:error', { jobId, error: msg, phase: 'uploading' })
     }).finally(() => {
       activeJobs.delete(jobId)
     })
@@ -662,8 +719,15 @@ Respond ONLY with a JSON array. No markdown, no explanation.`,
     const abortController = new AbortController()
     activeJobs.set(jobId, { id: jobId, abortController, phase: 'analyzing' })
 
+    // SCRUM-67: insert pending deployment record (non-fatal)
+    const pkgNameHint = req.userRequest.replace(/^(package|deploy|install)\s+/i, '').trim().slice(0, 120)
+    recordDeploymentStart(db, jobId, pkgNameHint, 'deploy')
+
     runPackageOnlyJob(jobId, req, abortController.signal, sendEvent, db).catch(err => {
-      sendEvent('job:error', { jobId, error: (err as Error).message, phase: 'unknown' })
+      const msg = (err as Error).message
+      // SCRUM-68: update deployment record on failure
+      recordDeploymentEnd(db, jobId, 'failed', { errorMessage: msg })
+      sendEvent('job:error', { jobId, error: msg, phase: 'unknown' })
     }).finally(() => {
       activeJobs.delete(jobId)
     })
@@ -679,7 +743,9 @@ async function runDeployJob(
   sendEvent: (channel: string, data: unknown) => void,
   db: Database
 ): Promise<void> {
+  const logLines: string[] = []
   const log = (msg: string, level = 'INFO', source: 'ai' | 'ps' | 'system' = 'ai') => {
+    logLines.push(`[${level}] ${msg}`)
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
   }
 
@@ -717,6 +783,13 @@ async function runDeployJob(
   log(`Source root: ${sourceRoot}`)
   log(`Output folder: ${outputFolder}`)
 
+  // SCRUM-67/68: metadata captured during tool calls for DB record
+  let capturedAppName = ''
+  let capturedWingetId: string | null = null
+  let capturedVersion: string | null = null
+  let capturedIntuneAppId: string | null = null
+  let capturedIntunewinPath: string | null = null
+
   let iterations = 0
   while (iterations++ < 20) {
     if (signal.aborted) throw new Error('Job cancelled')
@@ -738,6 +811,15 @@ async function runDeployJob(
     }
 
     if (response.stop_reason === 'end_turn') {
+      // SCRUM-68: update deployment record on success
+      recordDeploymentEnd(db, jobId, 'success', {
+        appName:         capturedAppName || undefined,
+        wingetId:        capturedWingetId ?? undefined,
+        deployedVersion: capturedVersion ?? undefined,
+        intuneAppId:     capturedIntuneAppId ?? undefined,
+        intunewinPath:   capturedIntunewinPath ?? undefined,
+        logSnapshot:     logLines.join('\n'),
+      })
       setPhase('done')
       sendEvent('job:complete', { jobId })
       break
@@ -754,6 +836,24 @@ async function runDeployJob(
 
       try {
         const result = await executeToolCall(block.name, block.input as Record<string, unknown>, jobId, sendEvent, db)
+        if (block.name === 'generate_package_settings') {
+          const inp = block.input as Record<string, unknown>
+          if (inp.app_name)    capturedAppName  = String(inp.app_name)
+          if (inp.winget_id)   capturedWingetId = String(inp.winget_id)
+          if (inp.app_version) capturedVersion  = String(inp.app_version)
+        }
+        if (block.name === 'get_latest_version' && !capturedVersion) {
+          const r = result as { version?: string }
+          if (r.version) capturedVersion = r.version
+        }
+        if (block.name === 'create_intune_app') {
+          const r = result as { success?: boolean; appId?: string }
+          if (r.appId) capturedIntuneAppId = r.appId
+        }
+        if (block.name === 'build_package') {
+          const r = result as { success?: boolean; intunewinPath?: string }
+          if (r.intunewinPath) capturedIntunewinPath = r.intunewinPath
+        }
         toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) })
       } catch (err) {
         const errMsg = (err as Error).message
@@ -779,7 +879,9 @@ async function runUploadOnlyJob(
   sendEvent: (channel: string, data: unknown) => void,
   db: Database
 ): Promise<void> {
+  const logLines: string[] = []
   const log = (msg: string, level = 'INFO', source: 'ai' | 'ps' | 'system' = 'system') => {
+    logLines.push(`[${level}] ${msg}`)
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
   }
   const setPhase = (phase: string) => {
@@ -845,6 +947,12 @@ async function runUploadOnlyJob(
     throw new Error(`Upload failed: ${uploadResult.error ?? 'unknown error'}`)
   }
 
+  // SCRUM-68: update deployment record on success
+  recordDeploymentEnd(db, jobId, 'success', {
+    intuneAppId: appId,
+    appName:     String(ps.app_name ?? ''),
+    logSnapshot: logLines.join('\n'),
+  })
   log('Deployment complete! App is now available in Intune.')
   setPhase('done')
   sendEvent('job:complete', { jobId })
@@ -892,7 +1000,9 @@ async function runPackageOnlyJob(
   sendEvent: (channel: string, data: unknown) => void,
   db: Database
 ): Promise<void> {
+  const logLines: string[] = []
   const log = (msg: string, level = 'INFO', source: 'ai' | 'ps' | 'system' = 'ai') => {
+    logLines.push(`[${level}] ${msg}`)
     sendEvent('job:log', { jobId, timestamp: new Date().toISOString(), level, message: msg, source })
   }
 
@@ -951,6 +1061,14 @@ async function runPackageOnlyJob(
     }
 
     if (response.stop_reason === 'end_turn') {
+      // SCRUM-68: update deployment record on success
+      recordDeploymentEnd(db, jobId, 'success', {
+        appName:         capturedPackageSettings?.app_name ? String(capturedPackageSettings.app_name) : undefined,
+        wingetId:        capturedPackageSettings?.winget_id ? String(capturedPackageSettings.winget_id) : undefined,
+        deployedVersion: capturedPackageSettings?.app_version ? String(capturedPackageSettings.app_version) : undefined,
+        intunewinPath:   builtIntunewinPath ?? undefined,
+        logSnapshot:     logLines.join('\n'),
+      })
       setPhase('done')
       // Emit package-complete with the intunewin path and captured metadata
       sendEvent('job:package-complete', { jobId, intunewinPath: builtIntunewinPath, packageSettings: capturedPackageSettings })
