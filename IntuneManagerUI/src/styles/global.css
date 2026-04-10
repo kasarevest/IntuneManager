@@ -29,6 +29,21 @@
   font-size: 14px;
 }
 
+/* SCRUM-120: light theme overrides */
+[data-theme="light"] {
+  --bg-900: #f1f5f9;
+  --bg-800: #ffffff;
+  --bg-700: #e2e8f0;
+  --bg-600: #cbd5e1;
+  --text-100: #0f172a;
+  --text-200: #1e293b;
+  --text-400: #475569;
+  --text-500: #64748b;
+  --border: #cbd5e1;
+  --surface-100: #ffffff;
+  --surface-200: #f1f5f9;
+}
+
 html, body, #root {
   height: 100%;
   background: var(--bg-900);

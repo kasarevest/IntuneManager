@@ -1,6 +1,15 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import type { AppSettings } from '../types/app'
-import { ipcSettingsGet, ipcSettingsSave, ipcDialogOpenFile, ipcDialogOpenFolder, ipcAwsSsoLogin, ipcSettingsClearAiCache } from '../lib/api'
+import { ipcSettingsGet, ipcSettingsSave, ipcDialogOpenFile, ipcDialogOpenFolder, ipcAwsSsoLogin, ipcSettingsClearAiCache, ipcValidatePath } from '../lib/api'
+
+type PathStatus = 'idle' | 'checking' | 'ok' | 'not_found' | 'empty'
+
+function PathIcon({ status }: { status: PathStatus }) {
+  if (status === 'checking') return <span style={{ color: 'var(--text-400)', fontSize: 14, flexShrink: 0 }}>⋯</span>
+  if (status === 'ok') return <span style={{ color: 'var(--success)', fontSize: 14, flexShrink: 0 }}>✅</span>
+  if (status === 'not_found') return <span style={{ color: 'var(--error)', fontSize: 14, flexShrink: 0 }}>❌</span>
+  return null
+}
 
 export default function GeneralTab() {
   const [settings, setSettings] = useState<AppSettings>({
@@ -13,6 +22,32 @@ export default function GeneralTab() {
     awsRegion: '',
     awsBedrockModelId: ''
   })
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
+  const [wintunerHash, setWintunerHash] = useState('')
+
+  // SCRUM-92/93/94: path validation
+  const [intunewinStatus, setIntunewinStatus] = useState<PathStatus>('idle')
+  const [sourceRootStatus, setSourceRootStatus] = useState<PathStatus>('idle')
+  const [outputStatus, setOutputStatus] = useState<PathStatus>('idle')
+  const debounceRefs = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+
+  const validatePath = useCallback(async (value: string, setter: (s: PathStatus) => void) => {
+    if (!value.trim()) { setter('empty'); return }
+    setter('checking')
+    try {
+      const res = await ipcValidatePath(value.trim())
+      setter(res.exists ? 'ok' : 'not_found')
+    } catch {
+      setter('idle')
+    }
+  }, [])
+
+  const debouncedValidate = useCallback((field: string, value: string, setter: (s: PathStatus) => void) => {
+    clearTimeout(debounceRefs.current[field])
+    debounceRefs.current[field] = setTimeout(() => validatePath(value, setter), 600)
+  }, [validatePath])
+
+  const hasPathError = intunewinStatus === 'not_found' || sourceRootStatus === 'not_found' || outputStatus === 'not_found'
   const [claudeApiKeyConfigured, setClaudeApiKeyConfigured] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -37,10 +72,24 @@ export default function GeneralTab() {
           awsBedrockModelId: res.awsBedrockModelId || 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
         })
         setClaudeApiKeyConfigured(res.claudeApiKeyConfigured ?? false)
+        const savedTheme = (res.theme ?? 'dark') as 'dark' | 'light'
+        setTheme(savedTheme)
+        document.documentElement.dataset.theme = savedTheme
+        setWintunerHash(res.wintunerExpectedHash ?? '')
+        // Validate paths on load
+        if (res.intunewinToolPath) validatePath(res.intunewinToolPath, setIntunewinStatus)
+        if (res.sourceRootPath) validatePath(res.sourceRootPath, setSourceRootStatus)
+        if (res.outputFolderPath) validatePath(res.outputFolderPath, setOutputStatus)
       }
     }
     load()
-  }, [])
+  }, [validatePath])
+
+  const handleThemeToggle = async (newTheme: 'dark' | 'light') => {
+    setTheme(newTheme)
+    document.documentElement.dataset.theme = newTheme
+    await ipcSettingsSave({ theme: newTheme })
+  }
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -63,7 +112,8 @@ export default function GeneralTab() {
       defaultMinOs: settings.defaultMinOs,
       logRetentionDays: settings.logRetentionDays,
       awsRegion: settings.awsRegion,
-      awsBedrockModelId: settings.awsBedrockModelId
+      awsBedrockModelId: settings.awsBedrockModelId,
+      wintunerExpectedHash: wintunerHash
     })
     setSaving(false)
     if (res.success) {
@@ -119,13 +169,14 @@ export default function GeneralTab() {
 
           <div className="form-group">
             <label>IntuneWinAppUtil.exe Path</label>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
                 value={settings.intunewinToolPath}
-                onChange={e => f('intunewinToolPath', e.target.value)}
+                onChange={e => { f('intunewinToolPath', e.target.value); debouncedValidate('intunewin', e.target.value, setIntunewinStatus) }}
                 placeholder="C:\...\IntuneWinAppUtil.exe"
                 style={{ flex: 1 }}
               />
+              <PathIcon status={intunewinStatus} />
               <button
                 type="button"
                 className="btn-secondary"
@@ -135,7 +186,7 @@ export default function GeneralTab() {
                     { name: 'Executable', extensions: ['exe'] },
                     { name: 'All Files', extensions: ['*'] }
                   ])
-                  if (path) f('intunewinToolPath', path)
+                  if (path) { f('intunewinToolPath', path); validatePath(path, setIntunewinStatus) }
                 }}
               >
                 Browse
@@ -145,20 +196,21 @@ export default function GeneralTab() {
 
           <div className="form-group">
             <label>Source Root Folder</label>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
                 value={settings.sourceRootPath}
-                onChange={e => f('sourceRootPath', e.target.value)}
+                onChange={e => { f('sourceRootPath', e.target.value); debouncedValidate('sourceRoot', e.target.value, setSourceRootStatus) }}
                 placeholder="C:\...\Source"
                 style={{ flex: 1 }}
               />
+              <PathIcon status={sourceRootStatus} />
               <button
                 type="button"
                 className="btn-secondary"
                 style={{ flexShrink: 0 }}
                 onClick={async () => {
                   const path = await ipcDialogOpenFolder('Select Source Root Folder')
-                  if (path) f('sourceRootPath', path)
+                  if (path) { f('sourceRootPath', path); validatePath(path, setSourceRootStatus) }
                 }}
               >
                 Browse
@@ -168,20 +220,21 @@ export default function GeneralTab() {
 
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label>Output Folder</label>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
                 value={settings.outputFolderPath}
-                onChange={e => f('outputFolderPath', e.target.value)}
+                onChange={e => { f('outputFolderPath', e.target.value); debouncedValidate('output', e.target.value, setOutputStatus) }}
                 placeholder="C:\...\Output"
                 style={{ flex: 1 }}
               />
+              <PathIcon status={outputStatus} />
               <button
                 type="button"
                 className="btn-secondary"
                 style={{ flexShrink: 0 }}
                 onClick={async () => {
                   const path = await ipcDialogOpenFolder('Select Output Folder')
-                  if (path) f('outputFolderPath', path)
+                  if (path) { f('outputFolderPath', path); validatePath(path, setOutputStatus) }
                 }}
               >
                 Browse
@@ -334,9 +387,57 @@ export default function GeneralTab() {
           </div>
         </div>
 
+        {/* ── Security ──────────────────────────────────────────────── */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Security</h3>
+
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>WinTuner Module Hash (SHA-256)</label>
+            <input
+              value={wintunerHash}
+              onChange={e => setWintunerHash(e.target.value)}
+              placeholder="Leave empty to skip hash verification"
+              style={{ fontFamily: 'monospace', fontSize: 12 }}
+            />
+            <p style={{ fontSize: 11, color: 'var(--text-500)', marginTop: 4 }}>
+              Pin the expected SHA-256 hash of WinTuner.psd1. When set, WinTuner operations will fail if the hash does not match — protecting against supply chain attacks.
+            </p>
+          </div>
+        </div>
+
+        {/* ── Appearance ────────────────────────────────────────────── */}
+        <div className="card" style={{ marginBottom: 20 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Appearance</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-400)', marginBottom: 12 }}>Choose between dark and light theme.</p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className={theme === 'dark' ? 'btn-primary' : 'btn-secondary'}
+              style={{ flexShrink: 0 }}
+              onClick={() => handleThemeToggle('dark')}
+            >
+              Dark
+            </button>
+            <button
+              type="button"
+              className={theme === 'light' ? 'btn-primary' : 'btn-secondary'}
+              style={{ flexShrink: 0 }}
+              onClick={() => handleThemeToggle('light')}
+            >
+              Light
+            </button>
+          </div>
+        </div>
+
         {error && <p className="error-text" style={{ marginBottom: 12 }}>{error}</p>}
 
-        <button type="submit" className="btn-primary" disabled={saving} style={{ padding: '9px 24px' }}>
+        {hasPathError && (
+          <p className="error-text" style={{ marginBottom: 12 }}>
+            One or more paths were not found. Fix the paths above before saving.
+          </p>
+        )}
+
+        <button type="submit" className="btn-primary" disabled={saving || hasPathError} style={{ padding: '9px 24px' }}>
           {saving ? 'Saving...' : saved ? '✓ Saved' : 'Save Settings'}
         </button>
       </form>

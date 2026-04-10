@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
 import { encrypt, decrypt } from '../services/encryption'
+import { existsSync } from 'fs'
 import prisma from '../db'
 
 const router = Router()
@@ -25,7 +26,9 @@ router.get('/api/settings', requireAuth as import('express').RequestHandler, asy
       defaultMinOs: settings['default_min_os'] ?? 'W10_21H2',
       logRetentionDays: parseInt(settings['log_retention_days'] ?? '30'),
       awsRegion: settings['aws_region'] ?? '',
-      awsBedrockModelId: settings['aws_bedrock_model_id'] ?? ''
+      awsBedrockModelId: settings['aws_bedrock_model_id'] ?? '',
+      theme: settings['theme'] ?? 'dark',
+      wintunerExpectedHash: settings['wintuner_expected_hash'] ?? ''
     })
   } catch (err) {
     res.json({ success: false, error: (err as Error).message })
@@ -44,6 +47,8 @@ router.post('/api/settings', requireAuth as import('express').RequestHandler, as
       logRetentionDays?: number
       awsRegion?: string
       awsBedrockModelId?: string
+      theme?: string
+      wintunerExpectedHash?: string
     }
 
     const upsertSetting = (key: string, value: string) =>
@@ -64,6 +69,8 @@ router.post('/api/settings', requireAuth as import('express').RequestHandler, as
     if (body.logRetentionDays !== undefined) ops.push(upsertSetting('log_retention_days', String(body.logRetentionDays)))
     if (body.awsRegion !== undefined) ops.push(upsertSetting('aws_region', body.awsRegion))
     if (body.awsBedrockModelId !== undefined) ops.push(upsertSetting('aws_bedrock_model_id', body.awsBedrockModelId))
+    if (body.theme !== undefined) ops.push(upsertSetting('theme', body.theme))
+    if (body.wintunerExpectedHash !== undefined) ops.push(upsertSetting('wintuner_expected_hash', body.wintunerExpectedHash))
 
     await Promise.all(ops)
     res.json({ success: true })
@@ -96,6 +103,20 @@ router.get('/api/settings/api-key', requireAuth as import('express').RequestHand
     res.json({ success: true, apiKey: row ? decrypt(row.value) : '' })
   } catch (err) {
     res.json({ success: false, apiKey: '', error: (err as Error).message })
+  }
+})
+
+// POST /api/settings/validate-path — checks if a path exists on the server filesystem
+router.post('/api/settings/validate-path', requireAuth as import('express').RequestHandler, async (req, res) => {
+  try {
+    const { path: pathValue } = req.body as { path?: string }
+    if (!pathValue || !pathValue.trim()) {
+      return res.json({ success: true, exists: false, status: 'empty' })
+    }
+    const exists = existsSync(pathValue.trim())
+    res.json({ success: true, exists, status: exists ? 'ok' : 'not_found' })
+  } catch (err) {
+    res.json({ success: false, exists: false, status: 'error', error: (err as Error).message })
   }
 })
 

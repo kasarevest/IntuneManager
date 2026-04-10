@@ -17,6 +17,8 @@ export interface SaveSettingsReq {
   logRetentionDays?: number
   awsRegion?: string
   awsBedrockModelId?: string
+  theme?: string
+  wintunerExpectedHash?: string
 }
 
 export interface AwsSsoLoginRes {
