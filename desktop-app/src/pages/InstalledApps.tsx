@@ -239,14 +239,14 @@ export default function InstalledApps() {
   }, [sync])
 
   useEffect(() => {
-    const init = async () => {
-      const s = await ipcSettingsGet()
+    // Run in parallel — settings failure must not block the WinTuner update check
+    ipcSettingsGet().then(s => {
       const folder = s.outputFolderPath ?? ''
       setOutputFolder(folder)
       outputFolderRef.current = folder
-      loadWtUpdates()
-    }
-    init()
+    }).catch(() => { /* non-fatal — pkgFolder() falls back to /tmp */ })
+
+    loadWtUpdates()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -442,40 +442,41 @@ export default function InstalledApps() {
             </div>
           )}
 
-          {/* WinTuner updates panel */}
-          {(wtLoading || wtUpdates.length > 0 || wtError) && (() => {
-            const autoItems  = wtUpdates.filter(u => u.autoUpdateEligible)
+          {/* WinTuner updates panel — always visible */}
+          {(() => {
+            const autoItems   = wtUpdates.filter(u => u.autoUpdateEligible)
             const manualItems = wtUpdates.filter(u => !u.autoUpdateEligible)
             const pendingManual = manualItems.filter(u => !['updating', 'updated'].includes(wtUpdateStates[u.graphId] ?? 'idle'))
             return (
               <div className="card" style={{ border: '1px solid rgba(234,179,8,0.4)', background: 'rgba(234,179,8,0.04)', padding: '12px 16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: wtUpdates.length > 0 ? 6 : 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ color: 'var(--warning)', fontSize: 15 }}>⟳</span>
-                    <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--warning)' }}>
-                      {wtLoading
-                        ? 'Checking WinTuner updates...'
-                        : wtError
-                          ? 'WinTuner check failed'
-                          : `WinTuner Updates Available (${wtUpdates.length})`}
-                    </span>
+                    <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--warning)' }}>WinTuner Updates</span>
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    {!wtLoading && (
-                      <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }} onClick={loadWtUpdates}>
-                        ↺ Refresh
-                      </button>
-                    )}
-                    {pendingManual.length > 1 && (
+                    {pendingManual.length > 0 && (
                       <button className="btn-primary" style={{ fontSize: 11, padding: '3px 10px' }} onClick={handleWtUpdateAll}>
                         Update All ({pendingManual.length})
                       </button>
                     )}
+                    <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }} onClick={loadWtUpdates} disabled={wtLoading}>
+                      ↺ Refresh
+                    </button>
                   </div>
                 </div>
 
-                {wtError && (
-                  <p style={{ fontSize: 12, color: 'var(--error)', margin: '4px 0 0' }}>{wtError}</p>
+                {wtLoading && (
+                  <p style={{ fontSize: 12, color: 'var(--text-400)', margin: '4px 0 0', fontStyle: 'italic' }}>Checking for updates...</p>
+                )}
+                {!wtLoading && wtError && (
+                  <p style={{ fontSize: 12, color: 'var(--error)', margin: '4px 0 0' }}>
+                    {wtError}{' '}
+                    <button className="btn-ghost" style={{ fontSize: 11, padding: '2px 6px', marginLeft: 6 }} onClick={loadWtUpdates}>Retry</button>
+                  </p>
+                )}
+                {!wtLoading && !wtError && wtUpdates.length === 0 && (
+                  <p style={{ fontSize: 12, color: 'var(--success)', margin: '4px 0 0' }}>✓ All WinTuner apps are current</p>
                 )}
 
                 {/* Auto-updating section (detected > 7 days ago) */}
