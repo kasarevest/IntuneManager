@@ -1,3 +1,9 @@
+# Feature Spec: Installed Apps Page
+
+**Status:** ✅ Completed
+
+---
+
 Installed Apps Page
 
 Create a new page called Installed Apps.

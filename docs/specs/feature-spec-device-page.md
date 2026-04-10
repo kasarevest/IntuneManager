@@ -1,3 +1,9 @@
+# Feature Spec: Devices Page
+
+**Status:** ✅ Completed
+
+---
+
 3. Devices Page
 
 Create a separate page called Devices.

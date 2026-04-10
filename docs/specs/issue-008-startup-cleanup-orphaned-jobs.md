@@ -1,7 +1,8 @@
 # Issue #008: Startup Cleanup of Orphaned "Running" Jobs
 
 **Priority:** Medium  
-**Status:** Not Started  
+**Status:** ✅ Completed  
+**Completed:** 2026-04-10  
 **Created:** 2026-04-02
 
 ## Problem Statement

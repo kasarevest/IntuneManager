@@ -1,5 +1,8 @@
 # Feature Spec: Installed Apps Page Update Behavior
 
+**Status:** ✅ Completed  
+**Completed:** 2026-04-10
+
 ## Summary
 
 Update the **Installed Apps** page behavior. After WinTuner checks an installed app for available updates, the Installed Apps page should handle update actions based on the age of the available update:

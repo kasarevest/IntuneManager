@@ -1,3 +1,10 @@
+# Feature Spec: Claude AI Connection Settings
+
+**Status:** ✅ Completed  
+**Completed:** 2026-04-10
+
+---
+
 Implementation Prompt:
 
 Update the Settings page to support two Claude connection options:

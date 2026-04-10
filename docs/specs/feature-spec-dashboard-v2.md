@@ -1,6 +1,6 @@
 # Feature Spec: Dashboard v2 — Enhanced Diagnostics & Visualizations
 
-**Status:** Draft  
+**Status:** 📋 To-Do  
 **Author:** kasarevest  
 **Created:** 2026-04-02  
 **Branch:** develop

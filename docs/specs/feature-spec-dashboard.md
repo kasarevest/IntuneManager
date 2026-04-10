@@ -1,3 +1,9 @@
+# Feature Spec: Dashboard Page
+
+**Status:** ✅ Completed
+
+---
+
 1. Dashboard Page
 
 Refactor the Dashboard so it is used strictly for visualizations and high-level insights across the application.

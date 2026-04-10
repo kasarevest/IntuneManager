@@ -1,6 +1,6 @@
 # Feature Spec: IntuneManager Remote Agent
 
-**Status:** Planned  
+**Status:** 📋 To-Do  
 **Author:** kasarevest  
 **Last Updated:** 2026-04-02  
 **Target Milestone:** v2.0

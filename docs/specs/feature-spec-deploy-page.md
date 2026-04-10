@@ -1,3 +1,9 @@
+# Feature Spec: Deployment Page
+
+**Status:** ✅ Completed
+
+---
+
 Refresh the current project IntunemanagerUI and design a Deployment Page with the following functionality and architecture:
 
 Core Features

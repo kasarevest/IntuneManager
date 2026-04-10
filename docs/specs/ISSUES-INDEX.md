@@ -217,9 +217,9 @@ Use this checklist to track implementation:
 - [x] #004 Path Traversal Validation — Complete 2026-04-09
 - [x] #005 Deployment History — Complete 2026-04-10
 - [x] #006 Non-Semver Version Comparison — Complete 2026-04-10
-- [ ] #007 Settings Path Validation
-- [ ] #008 Orphaned Jobs Cleanup
-- [ ] #009 Update All Summary
+- [x] #007 Settings Path Validation — Complete 2026-04-10
+- [x] #008 Orphaned Jobs Cleanup — Complete 2026-04-10
+- [x] #009 Update All Summary — Complete 2026-04-10
 
 ---
 

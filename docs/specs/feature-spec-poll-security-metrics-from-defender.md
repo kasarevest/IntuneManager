@@ -1,3 +1,6 @@
+# Feature Spec: Defender for Endpoint Metrics Dashboard
+
+**Status:** 📋 To-Do
 
 ---
 

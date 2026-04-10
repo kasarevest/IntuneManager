@@ -1,3 +1,9 @@
+# Feature Spec: App Catalog Page
+
+**Status:** ✅ Completed
+
+---
+
 1. App Catalog Page
 
 Create a new page called “App Catalog” with the following features:
